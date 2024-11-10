@@ -8,8 +8,22 @@ so I had to put up with defining the source and destination languages. It is a b
 You don't have to wait and then press a button to translate. You might want to use earphones if you are using a microphone otherwise with an external mic it hears itself 
 and you get an echo around effect where it keeps repeating itself!
 
-Written by ChatGPT o1-mini which I found the best to date of the AI LL models for programming (though I have just scratched teh surface).
+Written by ChatGPT o1-mini which I found the best to date of the AI LL models for programming (though I have just scratched the surface). You will need FFMPEG (free download) installed on your pc and important - the path must be entered so that
+it runs if you type ffmpeg at the command prompt of the pc. Download the Windows version. I have not tested this in Linux or other OS's.
 
+
+https://www.ffmpeg.org/download.html
+
+Search “Advanced system settings” in the Windows search bar.
+Click the “Environment Variables” button.
+Select “Path” from the list of system variables and click “Edit.”
+Click “New” and add the path to your ffmpeg folder, then click “OK.”
+
+If it doesn't run when you type ffmpeg at the command prompt the path isn't set up properly. Remember and reboot after setting the path.
+
+https://www.youtube.com/watch?v=8OCFdHo2zvg
+
+a video of it working!
 
 
 Tom Moir
