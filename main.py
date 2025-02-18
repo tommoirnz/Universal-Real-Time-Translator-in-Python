@@ -1,26 +1,40 @@
-# This version is best to date. Has readable names for Microsoft Edge voices
+import os
+import subprocess
+
+# (Do not monkey-patch here!)
+
 import tkinter as tk  # Standard Python library for GUI applications
-from tkinter import ttk, filedialog, messagebox  # Themed widgets, file dialogs, and message boxes from Tkinter
+from tkinter import ttk, filedialog, messagebox  # Themed widgets, file dialogs, and message boxes
 import tkinter.font as tkfont  # For dynamic font scaling
 import sounddevice as sd  # Access to audio input/output devices
 import numpy as np  # Numerical operations on arrays
 import speech_recognition as sr  # Speech-to-text functionality
 from deep_translator import GoogleTranslator  # GoogleTranslator for translation
-import threading  # Used for running tasks in the background
-import queue  # Queue used for communication between threads
+import threading  # For running tasks in the background
+import queue  # Queue for communication between threads
 from scipy.io.wavfile import write, read  # Save and read audio data to/from a file
 from pystray import Icon, Menu, MenuItem  # For system tray functionality
-from PIL import Image, ImageDraw  # Image handling for the system tray icon
+from PIL import Image, ImageDraw  # For image handling for the system tray icon
 import asyncio  # For asynchronous operations with edge-tts
+
+# Now that asyncio and its windows modules are imported, we can safely apply our monkey-patch.
+if os.name == "nt":
+    CREATE_NO_WINDOW = 0x08000000  # Windows flag to hide console window
+    original_popen = subprocess.Popen
+    def no_window_popen(*args, **kwargs):
+        if os.name == "nt":
+            kwargs.setdefault("creationflags", CREATE_NO_WINDOW)
+        return original_popen(*args, **kwargs)
+    subprocess.Popen = no_window_popen
+
 import edge_tts  # Text-to-Speech library using Microsoft Edge
 from pydub import AudioSegment  # For audio format conversion
 import tempfile  # For creating temporary files
-import os  # For file operations
 import sys  # For system-specific parameters and functions
-from collections import OrderedDict  # For implementing LRU Cache
+from collections import OrderedDict  # For implementing an LRU cache
 import io  # For in-memory byte streams
 import logging  # For detailed logging
-from concurrent.futures import ThreadPoolExecutor  # For managing worker threads more efficiently
+from concurrent.futures import ThreadPoolExecutor  # For managing worker threads
 import pycountry  # For mapping locale codes to full language names
 
 # Configure logging
@@ -73,7 +87,7 @@ class TranslatorApp:
 
         # Initialize the Translation Cache
         self.translation_cache = OrderedDict()  # To store (text, target_language): translated_text
-        self.cache_lock = threading.Lock()  # To ensure thread-safe access to the cache
+        self.cache_lock = threading.Lock()  # Ensure thread-safe access to the cache
         self.cache_size = 1000  # Maximum number of cached translations
 
         # Get screen width and height for scaling purposes
@@ -213,7 +227,7 @@ class TranslatorApp:
         self.root.geometry(f"{int(600 * self.scale_factor)}x{int(600 * self.scale_factor)}")
         self.root.configure(bg="#f4f4f4")
 
-        # Create top and bottom frames to organize layout
+        # Create top and bottom frames
         top_frame = tk.Frame(self.root, bg="#e0e0e0", bd=2, relief="groove",
                              padx=int(7.5 * self.scale_factor),
                              pady=int(7.5 * self.scale_factor))
@@ -223,13 +237,12 @@ class TranslatorApp:
                                 pady=int(7.5 * self.scale_factor))
         bottom_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # Language selection dropdowns (spoken and target language)
+        # Language selection dropdowns
         self.spoken_language_var = tk.StringVar()
         self.spoken_language_var.set("English (US)")
         self.target_language_var = tk.StringVar()
         self.target_language_var.set("English (US)")
 
-        # Spoken language label and dropdown
         spoken_language_label = tk.Label(top_frame, text="Select Spoken Language:", bg="#e0e0e0", fg="black",
                                          font=self.label_font)
         spoken_language_label.grid(row=0, column=0, padx=int(3.75 * self.scale_factor),
@@ -240,7 +253,6 @@ class TranslatorApp:
         spoken_language_dropdown.grid(row=0, column=1, padx=int(3.75 * self.scale_factor),
                                       pady=int(3.75 * self.scale_factor))
 
-        # Target language label and dropdown
         target_language_label = tk.Label(top_frame, text="Select Target Translation Language:", bg="#e0e0e0",
                                          fg="black", font=self.label_font)
         target_language_label.grid(row=1, column=0, padx=int(3.75 * self.scale_factor),
@@ -251,7 +263,6 @@ class TranslatorApp:
         target_language_dropdown.grid(row=1, column=1, padx=int(3.75 * self.scale_factor),
                                       pady=int(3.75 * self.scale_factor))
 
-        # Button to swap languages
         self.swap_button = tk.Button(top_frame, text="Swap Languages", command=self.swap_languages, bg="#FFC107",
                                      fg="black", font=self.button_font, relief="raised", bd=4)
         self.swap_button.grid(row=2, column=1, padx=int(3.75 * self.scale_factor),
@@ -272,18 +283,15 @@ class TranslatorApp:
                                        length=int(375 * self.scale_factor), variable=self.mic_level, maximum=100)
         mic_progress.pack(pady=int(7.5 * self.scale_factor))
 
-        # Button to start/stop audio capture
         self.start_button = tk.Button(bottom_frame, text="Start Audio Capture", command=self.toggle_recognition,
                                       bg="#4CAF50", fg="white", font=self.button_font, relief="raised", bd=4)
         self.start_button.pack(pady=int(7.5 * self.scale_factor))
 
-        # Gain slider for adjusting microphone gain
         gain_slider = tk.Scale(bottom_frame, from_=1.0, to_=4.0, resolution=0.1, orient="horizontal", label="Mic Gain",
                                length=int(225 * self.scale_factor), command=self.set_gain, font=self.label_font)
         gain_slider.set(1.0)
         gain_slider.pack(pady=int(7.5 * self.scale_factor))
 
-        # Frame for Buffer Size Slider
         buffer_size_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         buffer_size_frame.pack(pady=int(7.5 * self.scale_factor))
         buffer_size_label = tk.Label(buffer_size_frame, text="Buffer Size:", bg="#e0e0e0", fg="black",
@@ -295,29 +303,24 @@ class TranslatorApp:
         self.buffer_size_slider.pack(side=tk.LEFT)
         self.buffer_size_slider.set(40)
 
-        # Text box for displaying recognized text
         self.output_window_text_box = tk.Text(self.root, height=int(15 * self.scale_factor),
                                               width=int(60 * self.scale_factor), bg="#ffffff",
                                               font=self.text_font, bd=3, relief="sunken")
         self.output_window_text_box.pack(side=tk.LEFT, padx=int(7.5 * self.scale_factor),
                                          pady=int(7.5 * self.scale_factor))
 
-        # Button to save transcript
         save_button = tk.Button(bottom_frame, text="Save Transcript", command=self.save_transcript, bg="#4CAF50",
                                 fg="white", font=self.button_font, relief="raised", bd=4)
         save_button.pack(pady=int(7.5 * self.scale_factor))
 
-        # Button for Halt and Clean Exit
         exit_button = tk.Button(bottom_frame, text="Halt and Clean Exit", command=self.halt_and_exit,
                                 bg="red", fg="white", font=self.button_font, relief="raised", bd=4)
         exit_button.pack(pady=int(7.5 * self.scale_factor))
 
-        # Button for minimizing to system tray
         minimize_button = tk.Button(bottom_frame, text="Minimize to Tray", command=self.minimize_to_tray,
                                     bg="#FFC107", fg="black", font=self.button_font, relief="raised", bd=4)
         minimize_button.pack(pady=int(7.5 * self.scale_factor))
 
-        # Create the translation window
         self.create_translation_window()
 
     def get_full_language_name(self, locale_code):
@@ -364,7 +367,6 @@ class TranslatorApp:
         translation_window.configure(bg="#f4f4f4")
         translation_window.columnconfigure(0, weight=1)
         translation_window.rowconfigure(0, weight=1)
-
         text_frame = tk.Frame(translation_window, bg="#f4f4f4")
         text_frame.grid(row=0, column=0, sticky="nsew", padx=int(10 * self.scale_factor),
                         pady=int(10 * self.scale_factor))
@@ -373,7 +375,6 @@ class TranslatorApp:
                                            font=("Arial", self.font_size_var.get()), bd=3,
                                            relief="sunken")
         self.translated_text_box.pack(fill=tk.BOTH, expand=True)
-
         controls_frame = tk.Frame(translation_window, bg="#f4f4f4")
         controls_frame.grid(row=1, column=0, sticky="ew", padx=int(10 * self.scale_factor),
                             pady=int(10 * self.scale_factor))
@@ -388,7 +389,6 @@ class TranslatorApp:
                                                        font=self.dropdown_font, width=30)
         self.tts_output_device_combobox.grid(row=0, column=2, padx=(10, 0), pady=(10, 5), sticky="w")
         self.tts_output_device_combobox.set("Default")
-
         options_frame = tk.Frame(translation_window, bg="#f4f4f4")
         options_frame.grid(row=2, column=0, sticky="ew", padx=int(10 * self.scale_factor), pady=(5, 10))
         voice_frame = tk.Frame(options_frame, bg="#f4f4f4")
@@ -400,7 +400,6 @@ class TranslatorApp:
                                            values=["Loading voices..."], state="disabled",
                                            font=self.dropdown_font, width=50)
         self.voice_combobox.pack(side=tk.LEFT)
-
         font_size_frame = tk.Frame(translation_window, bg="#f4f4f4")
         font_size_frame.grid(row=3, column=0, sticky="ew", padx=int(10 * self.scale_factor), pady=(5, 10))
         font_size_label = tk.Label(font_size_frame, text="Translated Text Font Size:", bg="#f4f4f4", fg="black",
