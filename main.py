@@ -21,10 +21,14 @@ import asyncio  # For asynchronous operations with edge-tts
 if os.name == "nt":
     CREATE_NO_WINDOW = 0x08000000  # Windows flag to hide console window
     original_popen = subprocess.Popen
+
+
     def no_window_popen(*args, **kwargs):
         if os.name == "nt":
             kwargs.setdefault("creationflags", CREATE_NO_WINDOW)
         return original_popen(*args, **kwargs)
+
+
     subprocess.Popen = no_window_popen
 
 import edge_tts  # Text-to-Speech library using Microsoft Edge
@@ -35,7 +39,7 @@ from collections import OrderedDict  # For implementing an LRU cache
 import io  # For in-memory byte streams
 import logging  # For detailed logging
 from concurrent.futures import ThreadPoolExecutor  # For managing worker threads
-import pycountry  # For mapping locale codes to full language names
+import pycountry  # For mapping locale codes to full country names
 
 # Configure logging
 log_file = os.path.join(os.path.expanduser("~"), "translator_app_debug.log")
@@ -268,9 +272,37 @@ class TranslatorApp:
         mic_progress = ttk.Progressbar(bottom_frame, orient="horizontal", mode="determinate",
                                        length=int(375 * self.scale_factor), variable=self.mic_level, maximum=100)
         mic_progress.pack(pady=int(7.5 * self.scale_factor))
-        self.start_button = tk.Button(bottom_frame, text="Start Audio Capture", command=self.toggle_recognition,
-                                      bg="#4CAF50", fg="white", font=self.button_font, relief="raised", bd=4)
-        self.start_button.pack(pady=int(7.5 * self.scale_factor))
+
+        # Create a frame for the audio control buttons.
+        button_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
+        button_frame.pack(pady=int(7.5 * self.scale_factor))
+
+        # Start Audio Capture button.
+        self.start_button = tk.Button(
+            button_frame,
+            text="Start Audio Capture",
+            command=self.toggle_recognition,
+            bg="#4CAF50",
+            fg="white",
+            font=self.button_font,
+            relief="raised",
+            bd=4
+        )
+        self.start_button.pack(side=tk.LEFT, padx=5)
+
+        # Flush Buffers button.
+        flush_button = tk.Button(
+            button_frame,
+            text="Flush Buffers",
+            command=self.flush_buffers,
+            bg="#4CAF50",
+            fg="white",
+            font=self.button_font,
+            relief="raised",
+            bd=4
+        )
+        flush_button.pack(side=tk.LEFT, padx=5)
+
         gain_slider = tk.Scale(bottom_frame, from_=1.0, to_=4.0, resolution=0.1, orient="horizontal", label="Mic Gain",
                                length=int(225 * self.scale_factor), command=self.set_gain, font=self.label_font)
         gain_slider.set(1.0)
@@ -301,18 +333,54 @@ class TranslatorApp:
         minimize_button.pack(pady=int(7.5 * self.scale_factor))
         self.create_translation_window()
 
-    def get_full_language_name(self, locale_code):
-        """Convert a locale code to a full language name using pycountry."""
+    def flush_buffers(self):
+        """Flush all buffers to remove any old data that may interfere with new settings."""
         try:
-            language_part, country_part = locale_code.split('-')
-            language = pycountry.languages.get(alpha_2=language_part)
-            country = pycountry.countries.get(alpha_2=country_part)
-            if language and country:
-                return f"{language.name} ({country.name})"
-            elif language:
-                return language.name
+            # Clear the buffered audio chunks.
+            self.buffered_chunks.clear()
+            # Flush out the message, translation, and mic level queues.
+            while not self.message_queue.empty():
+                self.message_queue.get_nowait()
+            while not self.translation_queue.empty():
+                self.translation_queue.get_nowait()
+            while not self.mic_level_queue.empty():
+                self.mic_level_queue.get_nowait()
+            self.add_message_to_queue("Buffers flushed.\n")
+            logging.info("Buffers flushed by user.")
+        except Exception as e:
+            self.add_message_to_queue(f"Error flushing buffers: {e}\n")
+            logging.error(f"Error flushing buffers: {e}")
+
+    def get_country_name_from_locale(self, locale_code):
+        """Return the full country name from a locale code (e.g. 'en-US' returns 'United States')."""
+        if '-' in locale_code:
+            parts = locale_code.split('-')
+            if len(parts) >= 2:
+                country_code = parts[1].upper()
+                country = pycountry.countries.get(alpha_2=country_code)
+                if country:
+                    return country.name
+        return ""
+
+    def get_full_language_name(self, locale_code):
+        """Convert a locale code to a full language name using pycountry.
+        (Note: This function returns only the language name; the country is handled separately.)"""
+        try:
+            if '-' in locale_code:
+                language_part, _ = locale_code.split('-')
             else:
-                return locale_code
+                language_part = locale_code
+
+            language = pycountry.languages.get(alpha_2=language_part)
+            if language and hasattr(language, 'name'):
+                language_name = language.name
+            else:
+                language_name = locale_code
+
+            # Special case for Modern Greek.
+            if language_name.lower() == "modern greek":
+                language_name = "Greek Modern"
+            return language_name
         except Exception:
             return locale_code
 
@@ -368,6 +436,7 @@ class TranslatorApp:
         voice_label = tk.Label(voice_frame, text="Select Voice:", bg="#f4f4f4", fg="black",
                                font=self.label_font)
         voice_label.pack(side="left", padx=(0, 10))
+        # Build display names as "Country Full Name - VoiceName"
         self.voice_combobox = ttk.Combobox(voice_frame, textvariable=self.voice_var,
                                            values=["Loading voices..."], state="disabled",
                                            font=self.dropdown_font, width=50)
@@ -427,7 +496,8 @@ class TranslatorApp:
                     wasapi_prefix = ""
                     if "wasapi" in hostapi['name'].lower():
                         wasapi_prefix = "WASAPI "
-                    device_list.append(f"{i}: {wasapi_prefix}{device['name']} (Input Channels: {device['max_input_channels']})")
+                    device_list.append(
+                        f"{i}: {wasapi_prefix}{device['name']} (Input Channels: {device['max_input_channels']})")
             self.device_combobox['values'] = device_list
             if device_list:
                 self.device_combobox.current(0)
@@ -498,7 +568,7 @@ class TranslatorApp:
             "Cebuano": "ceb", "Chichewa": "ny", "Chinese (Simplified)": "zh-CN", "Chinese (Traditional)": "zh-TW",
             "Corsican": "co", "Croatian": "hr", "Czech": "cs", "Danish": "da", "Dutch": "nl", "English (US)": "en-US",
             "English (UK)": "en-GB", "Esperanto": "eo", "Estonian": "et", "Filipino": "tl", "Finnish": "fi",
-            "French": "fr", "Frisian": "fy", "Galician": "gl", "Georgian": "ka", "German": "de", "Greek": "el",
+            "French": "fr", "Frisian": "fy", "Galician": "gl", "Georgian": "ka", "German": "de", "Greek Modern": "el",
             "Gujarati": "gu", "Haitian Creole": "ht", "Hausa": "ha", "Hebrew": "he", "Hindi": "hi", "Hmong": "hmn",
             "Hungarian": "hu", "Icelandic": "is", "Igbo": "ig", "Indonesian": "id", "Irish": "ga", "Italian": "it",
             "Japanese": "ja", "Javanese": "jw", "Kannada": "kn", "Kazakh": "kk", "Khmer": "km", "Kinyarwanda": "rw",
@@ -823,10 +893,14 @@ class TranslatorApp:
                     logging.debug("TTS is disabled. Skipping speech synthesis.")
                     return
                 selected_voice_entry = self.voice_var.get()
-                selected_voice_name = selected_voice_entry.split(" (")[0] if " (" in selected_voice_entry else selected_voice_entry
-                logging.debug(f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
+                # Expecting display names in the format "Country Full Name - VoiceName"
+                selected_voice_name = selected_voice_entry.split(" - ")[
+                    1] if " - " in selected_voice_entry else selected_voice_entry
+                logging.debug(
+                    f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
                 selected_voice = next(
-                    (voice for voice in self.edge_tts_voices if self.strip_voice_prefix(voice['Name']) == selected_voice_name),
+                    (voice for voice in self.edge_tts_voices if
+                     self.strip_voice_prefix(voice['Name']) == selected_voice_name),
                     None
                 )
                 if not selected_voice:
@@ -928,6 +1002,7 @@ class TranslatorApp:
 
     def list_edge_tts_voices(self):
         """Fetch available TTS voices and update the voice combobox."""
+
         async def fetch_voices():
             try:
                 voices = await edge_tts.list_voices()
@@ -935,11 +1010,14 @@ class TranslatorApp:
                 voice_names = []
                 for voice in voices:
                     stripped_name = self.strip_voice_prefix(voice['Name'])
-                    locale_code = voice['Locale']
-                    language_name = self.get_full_language_name(locale_code)
-                    display_name = f"{stripped_name} ({language_name})"
+                    # Get the full country name from the voice's locale
+                    country_name = self.get_country_name_from_locale(voice['Locale'])
+                    if country_name:
+                        display_name = f"{country_name} - {stripped_name}"
+                    else:
+                        display_name = stripped_name
                     voice_names.append(display_name)
-                    logging.debug(f"Processed voice: '{stripped_name}' with language: '{language_name}'")
+                    logging.debug(f"Processed voice: '{display_name}'")
                 self.root.after(0, self.update_voice_combobox, voice_names)
                 if voice_names:
                     self.add_message_to_queue("All TTS voices loaded into the combobox.\n")
@@ -961,6 +1039,7 @@ class TranslatorApp:
                 self.voice_combobox.set("Error loading voices")
                 self.voice_combobox.config(state="disabled")
                 logging.error(error_message)
+
         if hasattr(self, 'tts_loop'):
             try:
                 asyncio.run_coroutine_threadsafe(fetch_voices(), self.tts_loop)
@@ -1054,6 +1133,19 @@ class TranslatorApp:
             return stripped_name
         logging.debug(f"No prefix found to strip for voice name: '{voice_name}'")
         return voice_name
+
+    # New helper method to get the full country name from a locale code.
+    def get_country_name_from_locale(self, locale_code):
+        """Return the full country name from a locale code (e.g. 'en-US' returns 'United States')."""
+        if '-' in locale_code:
+            parts = locale_code.split('-')
+            if len(parts) >= 2:
+                country_code = parts[1].upper()
+                country = pycountry.countries.get(alpha_2=country_code)
+                if country:
+                    return country.name
+        return ""
+
 
 # Start the application
 if __name__ == "__main__":
