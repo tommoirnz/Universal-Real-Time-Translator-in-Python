@@ -26,5 +26,10 @@ https://www.youtube.com/watch?v=8OCFdHo2zvg
 a video of it working!
 
 
+Requirements file is requirements.txt
+use.  pip install -r requirements.txt
+
+Note latest update reads text files and epub files.
+
 Tom Moir
 tomspeechnz@gmail.com
