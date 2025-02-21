@@ -8,7 +8,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="ebooklib.epub")
 warnings.filterwarnings("ignore", category=FutureWarning, module="ebooklib.epub")
 
 import tkinter as tk  # Standard Python library for GUI applications
-from tkinter import ttk, filedialog, messagebox, simpledialog  # Added simpledialog for jump input
+from tkinter import ttk, filedialog, messagebox, simpledialog
 import tkinter.font as tkfont  # For dynamic font scaling
 import sounddevice as sd  # Access to audio input/output devices
 import numpy as np  # Numerical operations on arrays
@@ -25,9 +25,9 @@ import asyncio  # For asynchronous operations with edge-tts
 from ebooklib import epub
 from bs4 import BeautifulSoup
 
-# Now that asyncio and its Windows modules are imported, we can safely apply our monkey-patch.
+# Monkey-patch to hide the console window on Windows.
 if os.name == "nt":
-    CREATE_NO_WINDOW = 0x08000000  # Windows flag to hide console window
+    CREATE_NO_WINDOW = 0x08000000
     original_popen = subprocess.Popen
 
 
@@ -41,13 +41,13 @@ if os.name == "nt":
 
 import edge_tts  # Text-to-Speech library using Microsoft Edge
 from pydub import AudioSegment  # For audio format conversion
-import tempfile  # For creating temporary files
-import sys  # For system-specific parameters and functions
+import tempfile
+import sys
 from collections import OrderedDict  # For implementing an LRU cache
-import io  # For in-memory byte streams
-import logging  # For detailed logging
-from concurrent.futures import ThreadPoolExecutor  # For managing worker threads
-import pycountry  # For mapping locale codes to full country names
+import io
+import logging
+from concurrent.futures import ThreadPoolExecutor
+import pycountry
 
 # Configure logging to write debug and error messages to a file in the user's home directory.
 log_file = os.path.join(os.path.expanduser("~"), "translator_app_debug.log")
@@ -55,7 +55,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     filename=log_file,
-    filemode='a'  # Append mode to preserve logs across sessions
+    filemode='a'
 )
 
 
@@ -82,132 +82,98 @@ def epub_to_text(epub_path):
 class TranslatorApp:
     def __init__(self, root):
         """
-        Initialize the TranslatorApp class:
-         - Setup GUI components and dynamic resizing.
-         - Configure audio capture parameters, TTS, and translation cache.
-         - Initialize background threads and queues.
-         - Also initialize text reading control attributes.
+        Initialize the TranslatorApp:
+          - Setup GUI components, including dynamic resizing.
+          - Configure audio capture, TTS, and translation caching.
+          - Initialize text reading control attributes.
         """
         self.root = root
-        self.is_listening = False  # Flag to control audio capture state
-        self.samplerate = 16000  # Initial sample rate (will be updated per device)
-        self.chunk_size = 2048  # Size of each audio chunk to be processed
-        self.buffered_chunks = []  # Buffer to hold audio chunks for processing
-        self.gain = 1.0  # Microphone gain factor (1.0 = no gain)
-        self.languages_swapped = False  # Tracks whether spoken/target languages are swapped
-        self.message_queue = queue.Queue()  # Queue for recognized messages
-        self.translation_queue = queue.Queue()  # Queue for translated messages
-        self.task_queue = queue.Queue()  # Queue for audio processing tasks
+        self.is_listening = False
+        self.samplerate = 16000
+        self.chunk_size = 2048
+        self.buffered_chunks = []
+        self.gain = 1.0
+        self.languages_swapped = False
+        self.message_queue = queue.Queue()
+        self.translation_queue = queue.Queue()
+        self.task_queue = queue.Queue()
 
-        # Define maximum number of lines for text boxes to prevent sluggishness
         self.MAX_RECOGNIZED_LINES = 100
         self.MAX_TRANSLATED_LINES = 100
 
-        # Initialize Text-to-Speech variables using edge-tts
         self.tts_enabled = tk.BooleanVar()
-        self.tts_enabled.set(False)  # Default: TTS disabled
+        self.tts_enabled.set(False)
         self.voice_var = tk.StringVar()
-        self.voice_var.set("Loading voices...")  # Initial placeholder
+        self.voice_var.set("Loading voices...")
 
-        # Font Size Variable for translated text (controlled by slider)
         self.font_size_var = tk.IntVar()
-        self.font_size_var.set(20)  # Default font size for translated text
+        self.font_size_var.set(20)
 
-        # Output device selection for TTS
         self.tts_output_device_var = tk.StringVar()
-        self.tts_output_device_var.set("Default")  # Default output device
+        self.tts_output_device_var.set("Default")
 
-        # Initialize a queue for microphone levels
         self.mic_level_queue = queue.Queue()
 
-        # Initialize the Translation Cache (using an OrderedDict as an LRU cache)
-        self.translation_cache = OrderedDict()  # To store (text, target_language): translated_text
-        self.cache_lock = threading.Lock()  # Ensure thread-safe access to the cache
-        self.cache_size = 1000  # Maximum number of cached translations
+        self.translation_cache = OrderedDict()
+        self.cache_lock = threading.Lock()
+        self.cache_size = 1000
 
-        # New attributes for text reading control
-        self.text_segments = []  # List of sentences (or paragraphs) from a text input
-        self.text_segment_index = 0  # Current index in the text segments
-        self.text_reading_active = True  # True if reading should continue
-
-        # Last spoken text to avoid duplicate TTS
+        # Text reading control attributes
+        self.text_segments = []  # List of segments (sentences)
+        self.text_segment_index = 0  # Current segment index
+        self.text_reading_active = True
         self.last_spoken_text = ""
+        self.input_text_box = None  # Will store reference to the text input widget
 
-        # Get screen width and height for scaling purposes
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-
-        # Define a scaling factor based on screen size (reduced to 75% for a more compact GUI)
         self.scale_factor = min(screen_width / 800, screen_height / 700) * 0.75
 
-        # Define a design baseline (in pixels) for dynamic resizing
         self.design_width = 600
         self.design_height = 600
-
-        # Set initial Tk scaling
         self.root.tk.call('tk', 'scaling', self.scale_factor)
 
-        # Create instance fonts that will be dynamically updated
         self.label_font = tkfont.Font(family="Arial", size=int(10.5 * self.scale_factor))
         self.dropdown_font = tkfont.Font(family="Arial", size=int(9 * self.scale_factor))
         self.button_font = tkfont.Font(family="Arial", size=int(10.5 * self.scale_factor))
-        # Create a font for main window buttons scaled to 75% of button_font:
         self.main_button_font = tkfont.Font(family="Arial", size=int(0.75 * self.button_font.actual("size")))
         self.text_font = tkfont.Font(family="Arial", size=int(10.5 * self.scale_factor))
 
-        # Set the minimum window size
         combobox_width = int(60 * self.scale_factor)
         self.root.minsize(combobox_width + 150, int(600 * self.scale_factor))
 
-        # Initialize shared language variables
         self.languages = self.get_language_dict()
-        self.language_code_to_name = {code: name for name, code in self.languages.items()}  # Reverse mapping
+        self.language_code_to_name = {code: name for name, code in self.languages.items()}
         self.current_spoken_language = self.languages.get("English (US)", "en")
         self.current_target_language = self.languages.get("English (US)", "en")
 
-        # Initialize Buffer Size Variable
         self.buffer_size_var = tk.IntVar()
-        self.buffer_size_var.set(40)  # Default buffer size set to 40 (Changed from 100)
+        self.buffer_size_var.set(40)
         self.buffer_size = self.buffer_size_var.get()
 
-        # Configure pydub to use the bundled ffmpeg if available.
         self.configure_ffmpeg()
-
-        # Create GUI components (text boxes, buttons, labels, etc.)
         self.create_widgets()
-
-        # Automatically list audio devices at startup
         self.list_audio_devices()
 
-        # Schedule recurring tasks to update the GUI and monitor microphone levels
         self.root.after(100, self.update_textbox)
         self.root.after(100, self.update_translation_box)
         self.root.after(100, self.process_mic_level_queue)
 
-        # Start background threads for audio capture and processing
         self.audio_thread = None
         self.audio_stop_event = threading.Event()
 
-        # Initialize TTS event loop in a separate thread
         self.tts_loop = asyncio.new_event_loop()
         self.tts_thread = threading.Thread(target=self.start_tts_loop, daemon=True)
         self.tts_thread.start()
 
-        # Initialize ThreadPoolExecutor for audio processing
         self.executor = ThreadPoolExecutor(max_workers=2)
-
-        # Start a thread to list all available TTS voices using edge-tts
         self.list_edge_tts_voices()
 
-        # Setup trace callbacks for language selection changes
         self.spoken_language_var.trace_add('write', self.update_spoken_language)
         self.target_language_var.trace_add('write', self.update_target_language)
-
-        # Bind the <Configure> event to enable dynamic resizing of fonts and scaling
         self.root.bind("<Configure>", self.on_resize)
 
     def on_resize(self, event):
-        """Handle dynamic resizing by updating the scaling factor and fonts."""
         if event.widget == self.root:
             new_scale = min(event.width / self.design_width, event.height / self.design_height)
             if abs(new_scale - self.scale_factor) > 0.01:
@@ -221,7 +187,6 @@ class TranslatorApp:
                 logging.debug(f"Dynamic resize: new scale factor set to {self.scale_factor}")
 
     def start_tts_loop(self):
-        """Start the asyncio event loop for TTS in a dedicated thread."""
         asyncio.set_event_loop(self.tts_loop)
         try:
             self.tts_loop.run_forever()
@@ -230,18 +195,18 @@ class TranslatorApp:
             logging.error(f"TTS event loop error: {e}")
 
     def configure_ffmpeg(self):
-        """Configure ffmpeg for pydub; if bundled, use it; otherwise, fallback to system ffmpeg."""
         try:
             import shutil
             if getattr(sys, 'frozen', False):
                 base_path = sys._MEIPASS
                 ffmpeg_executable = 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'
                 ffmpeg_path = os.path.join(base_path, 'ffmpeg', 'bin', ffmpeg_executable)
+                logging.debug(f"Looking for bundled ffmpeg at: {ffmpeg_path}")
                 if os.path.isfile(ffmpeg_path):
                     AudioSegment.converter = ffmpeg_path
-                    logging.debug(f"Configured ffmpeg path to bundled executable: {ffmpeg_path}")
+                    logging.debug(f"Bundled ffmpeg found at: {ffmpeg_path}")
                 else:
-                    logging.warning(f"Bundled ffmpeg not found at: {ffmpeg_path}. Using system ffmpeg.")
+                    logging.warning(f"Bundled ffmpeg not found at: {ffmpeg_path}. Using system ffmpeg if available.")
                     if shutil.which('ffmpeg'):
                         AudioSegment.converter = 'ffmpeg'
                     else:
@@ -259,25 +224,23 @@ class TranslatorApp:
             logging.error(f"Error configuring ffmpeg: {e}")
 
     def create_widgets(self):
-        """Create and arrange all GUI widgets."""
         self.root.title("Real-Time Language Translator")
         self.root.geometry(f"{int(600 * self.scale_factor)}x{int(600 * self.scale_factor)}")
         self.root.configure(bg="#f4f4f4")
 
-        # Create a top_frame for language and device controls.
+        # Top frame for language and device controls.
         top_frame = tk.Frame(self.root, bg="#e0e0e0", bd=2, relief="groove",
                              padx=0, pady=int(7.5 * self.scale_factor))
         top_frame.pack(side=tk.TOP, fill="x")
-        # Create a bottom_frame for audio and other controls.
+        # Bottom frame for audio controls.
         bottom_frame = tk.Frame(self.root, bg="#e0e0e0", bd=2, relief="groove",
                                 padx=int(7.5 * self.scale_factor),
                                 pady=int(7.5 * self.scale_factor))
         bottom_frame.pack(side=tk.BOTTOM, fill="x")
 
-        # --- Language selection controls ---
+        # Language selection controls.
         lang_frame = tk.Frame(top_frame, bg="#e0e0e0")
         lang_frame.pack(side="top", anchor="w", fill="x", padx=0)
-
         spoken_language_label = tk.Label(lang_frame, text="Select Spoken Language:", bg="#e0e0e0",
                                          fg="black", font=self.label_font)
         spoken_language_label.pack(anchor="w")
@@ -286,7 +249,6 @@ class TranslatorApp:
                                                 values=list(self.languages.keys()),
                                                 state="readonly", font=self.dropdown_font)
         spoken_language_dropdown.pack(anchor="w", pady=(0, 5))
-
         target_language_label = tk.Label(lang_frame, text="Select Target Translation Language:",
                                          bg="#e0e0e0", fg="black", font=self.label_font)
         target_language_label.pack(anchor="w")
@@ -295,12 +257,11 @@ class TranslatorApp:
                                                 values=list(self.languages.keys()),
                                                 state="readonly", font=self.dropdown_font)
         target_language_dropdown.pack(anchor="w", pady=(0, 5))
-
         self.swap_button = tk.Button(lang_frame, text="Swap Languages", command=self.swap_languages,
                                      bg="#FFC107", fg="black", font=self.main_button_font, relief="raised", bd=4)
         self.swap_button.pack(anchor="w", pady=(0, 5))
 
-        # --- Device selection controls ---
+        # Device selection controls.
         device_frame = tk.Frame(top_frame, bg="#e0e0e0")
         device_frame.pack(side="top", anchor="w", fill="x", padx=(60, 0),
                           pady=(int(7.5 * self.scale_factor), 0))
@@ -311,193 +272,168 @@ class TranslatorApp:
                                             font=self.dropdown_font, width=60)
         self.device_combobox.pack(anchor="w", pady=(0, int(3.75 * self.scale_factor)))
 
-        # --- Bottom frame: Audio control buttons and additional controls ---
+        # Bottom frame audio controls.
         self.mic_level = tk.DoubleVar()
         mic_progress = ttk.Progressbar(bottom_frame, orient="horizontal", mode="determinate",
                                        length=int(375 * self.scale_factor),
                                        variable=self.mic_level, maximum=100)
         mic_progress.pack(pady=int(7.5 * self.scale_factor))
-
-        # Frame for control buttons
         button_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         button_frame.pack(pady=int(7.5 * self.scale_factor))
-
-        # Start Audio Capture button
-        self.start_button = tk.Button(
-            button_frame, text="Start Audio Capture",
-            command=self.toggle_recognition, bg="#4CAF50", fg="white",
-            font=self.main_button_font, relief="raised", bd=4
-        )
+        self.start_button = tk.Button(button_frame, text="Start Audio Capture",
+                                      command=self.toggle_recognition, bg="#4CAF50", fg="white",
+                                      font=self.main_button_font, relief="raised", bd=4)
         self.start_button.pack(side=tk.LEFT, padx=5)
-
-        # Flush Buffers button
-        flush_button = tk.Button(
-            button_frame, text="Flush Buffers",
-            command=self.flush_buffers, bg="#4CAF50", fg="white",
-            font=self.main_button_font, relief="raised", bd=4
-        )
+        flush_button = tk.Button(button_frame, text="Flush Buffers",
+                                 command=self.flush_buffers, bg="#4CAF50", fg="white",
+                                 font=self.main_button_font, relief="raised", bd=4)
         flush_button.pack(side=tk.LEFT, padx=5)
-
-        # Text Input button
-        text_input_button = tk.Button(
-            button_frame, text="Text Input",
-            command=self.open_text_input_window, bg="#2196F3", fg="white",
-            font=self.main_button_font, relief="raised", bd=4
-        )
+        text_input_button = tk.Button(button_frame, text="Text Input",
+                                      command=self.open_text_input_window, bg="#2196F3", fg="white",
+                                      font=self.main_button_font, relief="raised", bd=4)
         text_input_button.pack(side=tk.LEFT, padx=5)
-
-        # Additional controls: gain slider and buffer size slider
         gain_slider = tk.Scale(bottom_frame, from_=1.0, to_=4.0, resolution=0.1,
                                orient="horizontal", label="Mic Gain",
                                length=int(225 * self.scale_factor),
                                command=self.set_gain, font=self.label_font)
         gain_slider.set(1.0)
         gain_slider.pack(pady=int(7.5 * self.scale_factor))
-
         buffer_size_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         buffer_size_frame.pack(pady=int(7.5 * self.scale_factor))
-        buffer_size_label = tk.Label(buffer_size_frame, text="Buffer Size:",
-                                     bg="#e0e0e0", fg="black", font=self.label_font)
-        buffer_size_label.pack(side="left", padx=(0, 10))
+        buffer_size_label = tk.Label(buffer_size_frame, text="Buffer Size:", bg="#e0e0e0", fg="black",
+                                     font=self.label_font)
+        buffer_size_label.pack(side=tk.LEFT, padx=(0, 10))
         self.buffer_size_slider = tk.Scale(buffer_size_frame, from_=20, to=120, resolution=10,
                                            orient="horizontal", variable=self.buffer_size_var,
                                            command=self.update_buffer_size,
-                                           length=int(200 * self.scale_factor),
-                                           font=self.dropdown_font)
+                                           length=int(200 * self.scale_factor), font=self.dropdown_font)
         self.buffer_size_slider.pack(side=tk.LEFT)
         self.buffer_size_slider.set(40)
-
-        # Main transcript text box for recognized text.
         self.output_window_text_box = tk.Text(self.root, height=int(15 * self.scale_factor),
                                               width=int(60 * self.scale_factor),
                                               bg="#ffffff", font=self.text_font,
                                               bd=3, relief="sunken")
         self.output_window_text_box.pack(side=tk.LEFT, padx=int(7.5 * self.scale_factor),
                                          pady=int(7.5 * self.scale_factor))
-
-        # Save Transcript button.
-        save_button = tk.Button(bottom_frame, text="Save Transcript",
+        # New bottom button frame with Save Transcript, Halt and Clean Exit, and Minimize to Tray on one line.
+        bottom_button_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
+        bottom_button_frame.pack(pady=int(7.5 * self.scale_factor))
+        save_button = tk.Button(bottom_button_frame, text="Save Transcript",
                                 command=self.save_transcript, bg="#4CAF50",
                                 fg="white", font=self.main_button_font, relief="raised", bd=4)
-        save_button.pack(pady=int(7.5 * self.scale_factor))
-
-        # Exit button.
-        exit_button = tk.Button(bottom_frame, text="Halt and Clean Exit",
+        save_button.pack(side=tk.LEFT, padx=5)
+        exit_button = tk.Button(bottom_button_frame, text="Halt and Clean Exit",
                                 command=self.halt_and_exit, bg="red", fg="white",
                                 font=self.main_button_font, relief="raised", bd=4)
-        exit_button.pack(pady=int(7.5 * self.scale_factor))
-
-        # Minimize to Tray button.
-        minimize_button = tk.Button(bottom_frame, text="Minimize to Tray",
+        exit_button.pack(side=tk.LEFT, padx=5)
+        minimize_button = tk.Button(bottom_button_frame, text="Minimize to Tray",
                                     command=self.minimize_to_tray, bg="#FFC107",
                                     fg="black", font=self.main_button_font, relief="raised", bd=4)
-        minimize_button.pack(pady=int(7.5 * self.scale_factor))
+        minimize_button.pack(side=tk.LEFT, padx=5)
 
-        # Create the separate translation window (with TTS controls).
+        # Create the separate translation window.
         self.create_translation_window()
 
     def open_text_input_window(self):
         """
-        Open a separate window that allows the user to paste text for translation.
-        This window now includes Pause Reading, Resume Reading, Read from File, and a new Jump button.
-        The buttons are aligned to the far left and use a smaller font.
+        Open a window for text input.
+        This window includes:
+          - A text widget for entering or pasting text.
+          - A vertical slider (to indicate progress).
+          - Buttons: Submit, Pause Reading, Resume Reading, Read from File, Jump, and Close.
         """
         text_window = tk.Toplevel(self.root)
         text_window.title("Text Input")
-        text_window.geometry(f"{int(400 * self.scale_factor)}x{int(300 * self.scale_factor)}")
+        text_window.geometry(f"{int(600 * self.scale_factor)}x{int(400 * self.scale_factor)}")
         text_window.configure(bg="#f4f4f4")
 
-        # Label informing the user to paste text in the current input language.
-        input_lang = self.spoken_language_var.get()
-        prompt_label = tk.Label(text_window,
-                                text=f"Paste text (in {input_lang}) below:",
-                                font=self.label_font, bg="#f4f4f4")
-        prompt_label.pack(pady=(10, 5), anchor="w")
+        main_frame = tk.Frame(text_window, bg="#f4f4f4")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Frame to hold the text widget and a vertical scrollbar.
-        text_frame = tk.Frame(text_window, bg="#f4f4f4")
-        text_frame.pack(padx=10, pady=5, fill=tk.BOTH, expand=True)
-
+        # Text widget with scrollbar.
+        text_frame = tk.Frame(main_frame, bg="#f4f4f4")
+        text_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar = tk.Scrollbar(text_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.input_text_box = tk.Text(text_frame, height=15, width=40,
+                                      font=self.text_font, bd=3, relief="sunken",
+                                      yscrollcommand=scrollbar.set)
+        self.input_text_box.pack(fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.input_text_box.yview)
 
-        input_text_box = tk.Text(text_frame, height=10, width=40,
-                                 font=self.text_font, bd=3, relief="sunken",
-                                 yscrollcommand=scrollbar.set)
-        input_text_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.config(command=input_text_box.yview)
+        # Vertical slider to show/jump position.
+        self.jump_slider = tk.Scale(main_frame, from_=1, to=1, orient="vertical", bg="#f4f4f4")
+        self.jump_slider.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
 
-        # Create a smaller font for the buttons (75% of main_button_font)
-        small_button_font = tkfont.Font(family=self.main_button_font.actual("family"),
-                                        size=int(self.main_button_font.actual("size") * 0.75))
-
-        # Frame for the buttons, aligned to the far left.
+        # Button panel.
         button_frame = tk.Frame(text_window, bg="#f4f4f4")
         button_frame.pack(pady=10, anchor="w")
-
+        small_button_font = tkfont.Font(family=self.main_button_font.actual("family"),
+                                        size=int(self.main_button_font.actual("size") * 0.75))
         submit_button = tk.Button(button_frame, text="Submit",
-                                  command=lambda: self.submit_text_input(input_text_box),
+                                  command=lambda: self.submit_text_input(self.input_text_box),
                                   bg="#4CAF50", fg="white", font=small_button_font,
                                   relief="raised", bd=4)
         submit_button.pack(side=tk.LEFT, padx=5)
-
         pause_button = tk.Button(button_frame, text="Pause Reading",
                                  command=self.pause_text_reading,
                                  bg="#F44336", fg="white", font=small_button_font,
                                  relief="raised", bd=4)
         pause_button.pack(side=tk.LEFT, padx=5)
-
         resume_button = tk.Button(button_frame, text="Resume Reading",
                                   command=self.resume_text_reading,
                                   bg="#4CAF50", fg="white", font=small_button_font,
                                   relief="raised", bd=4)
         resume_button.pack(side=tk.LEFT, padx=5)
-
         read_file_button = tk.Button(button_frame, text="Read from File",
-                                     command=lambda: self.read_from_file(input_text_box),
+                                     command=lambda: self.read_from_file(self.input_text_box),
                                      bg="#2196F3", fg="white", font=small_button_font,
                                      relief="raised", bd=4)
         read_file_button.pack(side=tk.LEFT, padx=5)
-
         jump_button = tk.Button(button_frame, text="Jump",
-                                command=self.jump_text_reading,
+                                command=self.jump_via_slider,
                                 bg="#9C27B0", fg="white", font=small_button_font,
                                 relief="raised", bd=4)
         jump_button.pack(side=tk.LEFT, padx=5)
-
         close_button = tk.Button(button_frame, text="Close",
                                  command=text_window.destroy,
                                  bg="#F44336", fg="white", font=small_button_font,
                                  relief="raised", bd=4)
         close_button.pack(side=tk.LEFT, padx=5)
 
-    def jump_text_reading(self):
+    def jump_via_slider(self):
         """
-        Prompt the user to enter a paragraph (or sentence) number to jump to.
-        Sets the text_segment_index accordingly and resumes text reading.
+        When the Jump button is pressed, read the slider's current value,
+        update the reading index, scroll the input text widget to the new position,
+        and resume text reading from that segment.
         """
         if not self.text_segments:
             messagebox.showinfo("No Text", "No text has been loaded yet.")
             return
-        index = simpledialog.askinteger("Jump to Sentence",
-                                        f"Enter Sentence number (1 to {len(self.text_segments)}):",
-                                        minvalue=1, maxvalue=len(self.text_segments))
-        if index is not None:
-            self.text_segment_index = index - 1
-            self.text_reading_active = True  # Ensure reading is active
-            self.add_message_to_queue(f"Jumping to paragraph {index}.\n")
-            logging.info(f"Jumping to paragraph {index}.")
+        new_index = int(self.jump_slider.get()) - 1
+        if new_index < len(self.text_segments):
+            self.text_segment_index = new_index
+            self.text_reading_active = True
+            self.add_message_to_queue(f"Jumping to segment {new_index + 1}.\n")
+            logging.info(f"Jumping to segment {new_index + 1}.")
+            # Compute cumulative characters from preceding segments.
+            cumulative_chars = sum(len(s) for s in self.text_segments[:new_index])
+            self.input_text_box.see("1.0+" + str(cumulative_chars) + " chars")
+            # Highlight the current segment.
+            self.input_text_box.tag_remove("current", "1.0", tk.END)
+            start_index = "1.0+" + str(cumulative_chars) + " chars"
+            end_index = "1.0+" + str(cumulative_chars + len(self.text_segments[new_index])) + " chars"
+            self.input_text_box.tag_add("current", start_index, end_index)
+            self.input_text_box.tag_config("current", background="yellow")
             self.process_next_text_segment()
 
     def read_from_file(self, input_text_box):
-        """Open a file dialog to select a text or EPUB file and insert its contents into the text box."""
         file_path = filedialog.askopenfilename(
             title="Select a file",
             filetypes=[("Text files", "*.txt"), ("EPUB files", "*.epub")]
         )
         if not file_path:
-            return  # User cancelled
-
+            return
         try:
             if file_path.lower().endswith(".epub"):
                 full_text = epub_to_text(file_path)
@@ -511,10 +447,6 @@ class TranslatorApp:
             messagebox.showerror("File Read Error", f"Error reading file: {e}")
 
     def submit_text_input(self, input_text_box):
-        """
-        Retrieve the pasted text from the text widget and process it.
-        The text input window will remain open after submission.
-        """
         text = input_text_box.get("1.0", tk.END).strip()
         if not text:
             messagebox.showwarning("No Text", "Please paste some text before submitting.")
@@ -522,27 +454,34 @@ class TranslatorApp:
         self.handle_text_input(text)
 
     def handle_text_input(self, text):
-        """
-        Process the pasted text incrementally:
-         - Log the text input.
-         - Split the text into sentences and store them.
-         - Reset the reading index and flag.
-         - Start processing the first sentence.
-        """
         self.add_message_to_queue(f"Text Input ({self.spoken_language_var.get()}): {text}\n")
+        # Split text into segments by sentences.
         self.text_segments = re.split(r'(?<=[.!?])\s+', text)
         self.text_segment_index = 0
         self.text_reading_active = True
+        if hasattr(self, 'jump_slider'):
+            self.jump_slider.config(from_=1, to=len(self.text_segments))
+            self.jump_slider.set(1)
         self.process_next_text_segment()
 
     def process_next_text_segment(self):
-        """Process the next sentence if text reading is active."""
         if not self.text_reading_active:
             return
         if self.text_segment_index >= len(self.text_segments):
             return
         segment = self.text_segments[self.text_segment_index].strip().replace("\n", " ")
         self.text_segment_index += 1
+        if hasattr(self, 'jump_slider'):
+            self.jump_slider.set(self.text_segment_index)
+        # Auto scroll and highlight current segment.
+        if self.input_text_box:
+            cumulative_chars = sum(len(s) for s in self.text_segments[:self.text_segment_index - 1])
+            self.input_text_box.see("1.0+" + str(cumulative_chars) + " chars")
+            self.input_text_box.tag_remove("current", "1.0", tk.END)
+            start_index = "1.0+" + str(cumulative_chars) + " chars"
+            end_index = "1.0+" + str(cumulative_chars + len(segment)) + " chars"
+            self.input_text_box.tag_add("current", start_index, end_index)
+            self.input_text_box.tag_config("current", background="yellow")
         if not segment:
             self.root.after(10, self.process_next_text_segment)
             return
@@ -557,13 +496,11 @@ class TranslatorApp:
         self.root.after(delay, self.process_next_text_segment)
 
     def pause_text_reading(self):
-        """Pause the incremental text reading."""
         self.text_reading_active = False
         self.add_message_to_queue("Text reading paused.\n")
         logging.info("Text reading paused by user.")
 
     def resume_text_reading(self):
-        """Resume the incremental text reading if paused."""
         if not self.text_reading_active:
             self.text_reading_active = True
             self.add_message_to_queue("Text reading resumed.\n")
@@ -571,7 +508,6 @@ class TranslatorApp:
             self.process_next_text_segment()
 
     def flush_buffers(self):
-        """Flush all buffers and queues to clear previous data."""
         try:
             self.buffered_chunks.clear()
             while not self.message_queue.empty():
@@ -587,7 +523,6 @@ class TranslatorApp:
             logging.error(f"Error flushing buffers: {e}")
 
     def get_country_name_from_locale(self, locale_code):
-        """Return the full country name from a locale code (e.g. 'en-US' returns 'United States')."""
         if locale_code.lower() == "cy-gb":
             return "Wales"
         if '-' in locale_code:
@@ -600,10 +535,6 @@ class TranslatorApp:
         return ""
 
     def get_full_language_name(self, locale_code):
-        """
-        Convert a locale code to a full language name using pycountry.
-        (Note: Only the language name is returned; the country is handled separately.)
-        """
         try:
             if '-' in locale_code:
                 language_part, _ = locale_code.split('-')
@@ -621,7 +552,6 @@ class TranslatorApp:
             return locale_code
 
     def update_buffer_size(self, value):
-        """Update the audio buffer size based on the slider's value."""
         try:
             buffer_size = int(value)
             if 20 <= buffer_size <= 120:
@@ -636,7 +566,6 @@ class TranslatorApp:
             logging.error("Invalid buffer size value entered.")
 
     def create_translation_window(self):
-        """Create a separate window for displaying translated text and TTS controls."""
         translation_window = tk.Toplevel(self.root)
         translation_window.title("Translation Window")
         translation_window.geometry(f"{int(700 * self.scale_factor)}x{int(600 * self.scale_factor)}")
@@ -697,7 +626,6 @@ class TranslatorApp:
         font_size_slider.pack(side="left", padx=(10, 0), pady=5)
 
     def set_translation_font_size(self, size):
-        """Adjust the font size of the translated text box."""
         try:
             new_font = ("Arial", int(size))
             self.translated_text_box.config(font=new_font)
@@ -707,7 +635,6 @@ class TranslatorApp:
             logging.error("Invalid font size selected.")
 
     def swap_languages(self):
-        """Swap the spoken and target languages."""
         try:
             if self.spoken_language_var.get() == self.target_language_var.get():
                 messagebox.showinfo("Swap Languages", "Spoken and target languages are the same. Swap not required.")
@@ -729,7 +656,6 @@ class TranslatorApp:
             logging.error(f"Error swapping languages: {e}")
 
     def list_audio_devices(self):
-        """List available microphone devices and populate the device combobox."""
         try:
             devices = sd.query_devices()
             hostapis = sd.query_hostapis()
@@ -755,7 +681,6 @@ class TranslatorApp:
             logging.error(f"Error listing audio devices: {e}")
 
     def halt_and_exit(self):
-        """Cleanly exit the application."""
         try:
             if self.is_listening:
                 self.toggle_recognition()
@@ -776,16 +701,12 @@ class TranslatorApp:
             sys.exit()
 
     def minimize_to_tray(self):
-        """Minimize the application to the system tray."""
         try:
             icon_image = Image.new('RGB', (64, 64), (255, 255, 255))
             draw = ImageDraw.Draw(icon_image)
             draw.rectangle((0, 0, 64, 64), fill=(0, 100, 255))
             icon_image = icon_image.resize((64, 64))
-            menu = Menu(
-                MenuItem('Restore', self.restore_from_tray),
-                MenuItem('Exit', self.halt_and_exit)
-            )
+            menu = Menu(MenuItem('Restore', self.restore_from_tray), MenuItem('Exit', self.halt_and_exit))
             self.tray_icon = Icon("TranslatorApp", icon_image, "Translator", menu)
             self.root.withdraw()
             logging.info("Application minimized to system tray.")
@@ -795,7 +716,6 @@ class TranslatorApp:
             logging.error(f"Error minimizing to tray: {e}")
 
     def restore_from_tray(self, icon, item):
-        """Restore the application from the system tray."""
         try:
             self.tray_icon.stop()
             self.root.deiconify()
@@ -805,7 +725,6 @@ class TranslatorApp:
             logging.error(f"Error restoring from tray: {e}")
 
     def get_language_dict(self):
-        """Return a dictionary mapping language names to ISO codes."""
         return {
             "Afrikaans": "af", "Albanian": "sq", "Amharic": "am", "Arabic": "ar", "Armenian": "hy", "Azerbaijani": "az",
             "Basque": "eu", "Belarusian": "be", "Bengali": "bn", "Bosnian": "bs", "Bulgarian": "bg", "Catalan": "ca",
@@ -829,17 +748,14 @@ class TranslatorApp:
         }
 
     def add_message_to_queue(self, message):
-        """Add a message to the recognized text queue and log it."""
         self.message_queue.put(message)
         logging.debug(message.strip())
 
     def add_translation_to_queue(self, message):
-        """Add a translated message to the translation queue and log it."""
         self.translation_queue.put(message)
         logging.debug(f"Translation added to queue: {message.strip()}")
 
     def insert_text_with_limit(self, text_widget, message, max_lines):
-        """Insert text into a widget and ensure it does not exceed max_lines."""
         text_widget.insert(tk.END, message)
         text_widget.see(tk.END)
         current_lines = int(text_widget.index('end-1c').split('.')[0])
@@ -849,7 +765,6 @@ class TranslatorApp:
             logging.debug(f"Deleted {lines_to_delete} lines from the text box to maintain max lines.")
 
     def update_textbox(self):
-        """Update the recognized text box with messages from the message queue."""
         try:
             while not self.message_queue.empty():
                 message = self.message_queue.get_nowait()
@@ -860,15 +775,17 @@ class TranslatorApp:
             self.root.after(100, self.update_textbox)
 
     def update_translation_box(self):
-        """Update the translation text box with new translations and trigger TTS (avoiding duplicates)."""
         try:
             while not self.translation_queue.empty():
                 message = self.translation_queue.get_nowait()
                 self.insert_text_with_limit(self.translated_text_box, message, self.MAX_TRANSLATED_LINES)
                 new_text = message.strip()
-                if new_text and new_text != self.last_spoken_text:
-                    self.speak_text(new_text)
-                    self.last_spoken_text = new_text
+                if new_text:
+                    # Highlight the current sentence in the output translation box
+                    self.highlight_current_output_sentence(new_text)
+                    if new_text != self.last_spoken_text:
+                        self.speak_text(new_text)
+                        self.last_spoken_text = new_text
         except Exception as e:
             self.add_message_to_queue(f"Error updating translation box: {e}\n")
             logging.error(f"Error updating translation box: {e}")
@@ -876,7 +793,6 @@ class TranslatorApp:
             self.root.after(100, self.update_translation_box)
 
     def process_mic_level_queue(self):
-        """Process and update the microphone level display from the queue."""
         try:
             while not self.mic_level_queue.empty():
                 mic_level = self.mic_level_queue.get_nowait()
@@ -890,7 +806,6 @@ class TranslatorApp:
             self.root.after(100, self.process_mic_level_queue)
 
     def process_audio_buffer(self, spoken_language_code, target_language_code, audio_data):
-        """Process buffered audio for speech recognition and translation."""
         recognizer = sr.Recognizer()
         try:
             logging.debug("Processing audio buffer...")
@@ -923,7 +838,6 @@ class TranslatorApp:
             logging.exception("Unexpected error during audio processing.")
 
     def translate_text(self, text, target_language):
-        """Translate text using GoogleTranslator with caching."""
         cache_key = (text.lower(), target_language)
         with self.cache_lock:
             if cache_key in self.translation_cache:
@@ -949,12 +863,10 @@ class TranslatorApp:
             return None
 
     def worker_thread(self, task):
-        """Background worker thread to process audio data."""
         spoken_language_code, target_language_code, audio_data = task
         self.process_audio_buffer(spoken_language_code, target_language_code, audio_data)
 
     def audio_callback(self, indata, frames, time, status):
-        """Callback for real-time audio capture."""
         try:
             if status:
                 self.add_message_to_queue(f"Audio input error: {status}\n")
@@ -982,10 +894,6 @@ class TranslatorApp:
             logging.error(f"Error in audio callback: {e}")
 
     def start_audio_capture(self, device_index):
-        """
-        Start continuous audio capture using the selected device.
-        For WASAPI devices, the device’s default sample rate is used.
-        """
         try:
             self.add_message_to_queue("Starting audio capture...\n")
             logging.info("Starting audio capture.")
@@ -1001,7 +909,6 @@ class TranslatorApp:
             logging.error(f"Error during audio capture: {e}")
 
     def toggle_recognition(self):
-        """Toggle starting or stopping the audio capture."""
         try:
             self.is_listening = not self.is_listening
             if self.is_listening:
@@ -1026,7 +933,6 @@ class TranslatorApp:
             logging.error(f"Error toggling recognition: {e}")
 
     def get_selected_device_index(self):
-        """Retrieve the index of the selected audio device from the combobox."""
         selected_device = self.device_combobox.get()
         if selected_device:
             try:
@@ -1042,7 +948,6 @@ class TranslatorApp:
         return None
 
     def save_transcript(self):
-        """Save recognized and translated text to a file."""
         try:
             logging.debug("save_transcript method called.")
             if not self.root.winfo_viewable():
@@ -1085,7 +990,6 @@ class TranslatorApp:
             logging.error(f"Error during transcript saving: {e}", exc_info=True)
 
     def set_gain(self, value):
-        """Adjust the microphone gain based on the slider value."""
         try:
             self.gain = float(value)
             db_gain = int(20 * np.log10(self.gain))
@@ -1096,7 +1000,6 @@ class TranslatorApp:
             logging.error("Invalid gain value entered.")
 
     def map_language_for_translation(self, lang_code):
-        """Map language codes from the recognizer to those accepted by GoogleTranslator."""
         mapping = {
             'af': 'af', 'sq': 'sq', 'am': 'am', 'ar': 'ar', 'hy': 'hy', 'az': 'az',
             'eu': 'eu', 'be': 'be', 'bn': 'bn', 'bs': 'bs', 'bg': 'bg', 'ca': 'ca',
@@ -1122,7 +1025,6 @@ class TranslatorApp:
         return mapped_lang
 
     def toggle_tts(self):
-        """Toggle Text-to-Speech functionality."""
         try:
             if self.tts_enabled.get():
                 self.add_message_to_queue("Text-to-Speech Enabled.\n")
@@ -1135,7 +1037,6 @@ class TranslatorApp:
             logging.error(f"Error toggling TTS: {e}")
 
     async def async_speak_text(self, text, retry_count=3):
-        """Asynchronously speak text using edge-tts and play it."""
         for attempt in range(1, retry_count + 1):
             try:
                 if not self.tts_enabled.get():
@@ -1220,7 +1121,6 @@ class TranslatorApp:
                     logging.error(final_error)
 
     def speak_text(self, text):
-        """Speak text using TTS if enabled."""
         if self.tts_enabled.get() and hasattr(self, 'tts_loop') and hasattr(self, 'edge_tts_voices'):
             try:
                 coro = self.async_speak_text(text)
@@ -1231,7 +1131,6 @@ class TranslatorApp:
                 logging.error(f"Error scheduling TTS: {e}")
 
     def get_output_devices(self):
-        """Return a list of available output devices for TTS playback."""
         try:
             devices = sd.query_devices()
             output_devices = ["Default"]
@@ -1246,8 +1145,6 @@ class TranslatorApp:
             return ["Default"]
 
     def list_edge_tts_voices(self):
-        """Fetch available TTS voices from edge-tts and update the voice combobox."""
-
         async def fetch_voices():
             try:
                 voices = await edge_tts.list_voices()
@@ -1293,7 +1190,6 @@ class TranslatorApp:
             logging.error("TTS event loop not initialized.")
 
     def update_voice_combobox(self, voice_names):
-        """Update the voice combobox with the list of available voices."""
         try:
             self.voice_combobox['values'] = voice_names
             if voice_names:
@@ -1309,7 +1205,6 @@ class TranslatorApp:
             logging.error(f"Error updating voice combobox: {e}")
 
     def read_wav(self, filename):
-        """Read a WAV file and return its sample rate and data normalized to float32."""
         fs, data = read(filename)
         if data.dtype != np.float32:
             max_val = np.max(np.abs(data))
@@ -1319,7 +1214,6 @@ class TranslatorApp:
         return fs, data
 
     def stop_tts_loop(self):
-        """Stop the TTS asyncio loop gracefully."""
         try:
             if hasattr(self, 'tts_loop') and self.tts_loop.is_running():
                 self.tts_loop.call_soon_threadsafe(self.tts_loop.stop)
@@ -1330,7 +1224,6 @@ class TranslatorApp:
             logging.error(f"Error stopping TTS loop: {e}")
 
     def update_spoken_language(self, *args):
-        """Update the current spoken language when the selection changes."""
         try:
             self.current_spoken_language = self.languages.get(self.spoken_language_var.get(), "en")
             logging.debug(f"Spoken language updated to: {self.current_spoken_language}")
@@ -1339,7 +1232,6 @@ class TranslatorApp:
             logging.error(f"Error updating spoken language: {e}")
 
     def update_target_language(self, *args):
-        """Update the current target language when the selection changes."""
         try:
             self.current_target_language = self.languages.get(self.target_language_var.get(), "en")
             logging.debug(f"Target language updated to: {self.current_target_language}")
@@ -1348,7 +1240,6 @@ class TranslatorApp:
             logging.error(f"Error updating target language: {e}")
 
     def disable_buffer_size_control(self):
-        """Disable the buffer size slider during audio capture."""
         try:
             self.buffer_size_slider.config(state='disabled')
             logging.debug("Buffer size control disabled during audio capture.")
@@ -1357,7 +1248,6 @@ class TranslatorApp:
             logging.error(f"Error disabling buffer size control: {e}")
 
     def enable_buffer_size_control(self):
-        """Enable the buffer size slider after audio capture stops."""
         try:
             self.buffer_size_slider.config(state='normal')
             logging.debug("Buffer size control enabled after stopping audio capture.")
@@ -1366,7 +1256,6 @@ class TranslatorApp:
             logging.error(f"Error enabling buffer size control: {e}")
 
     def strip_voice_prefix(self, voice_name):
-        """Remove a redundant prefix from the TTS voice name if present."""
         prefix = "Microsoft Server Speech Text to Speech Voice "
         if voice_name.lower().startswith(prefix.lower()):
             stripped_name = voice_name[len(prefix):].strip("'\" ")
@@ -1376,7 +1265,6 @@ class TranslatorApp:
         return voice_name
 
     def get_country_name_from_locale(self, locale_code):
-        """Return the full country name from a locale code (e.g. 'en-US' returns 'United States')."""
         if locale_code.lower() == "cy-gb":
             return "Wales"
         if '-' in locale_code:
@@ -1388,8 +1276,36 @@ class TranslatorApp:
                     return country.name
         return ""
 
+    # New function to highlight the current output sentence in the translation box
+    def highlight_current_output_sentence(self, sentence):
+        # Remove any previous highlight
+        self.translated_text_box.tag_remove("current_output", "1.0", tk.END)
+        # Find the index of the current sentence (assumes it was just inserted)
+        index = self.translated_text_box.search(sentence, "1.0", tk.END)
+        if index:
+            end_index = f"{index}+{len(sentence)}c"
+            self.translated_text_box.tag_add("current_output", index, end_index)
+            self.translated_text_box.tag_config("current_output", background="yellow")
+            logging.debug(f"Highlighted sentence from {index} to {end_index}.")
 
-# Start the application
+    def get_full_language_name(self, locale_code):
+        try:
+            if '-' in locale_code:
+                language_part, _ = locale_code.split('-')
+            else:
+                language_part = locale_code
+            language = pycountry.languages.get(alpha_2=language_part)
+            if language and hasattr(language, 'name'):
+                language_name = language.name
+            else:
+                language_name = locale_code
+            if language_name.lower() == "modern greek":
+                language_name = "Greek Modern"
+            return language_name
+        except Exception:
+            return locale_code
+
+
 if __name__ == "__main__":
     try:
         root = tk.Tk()
