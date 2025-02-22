@@ -1189,6 +1189,8 @@ class TranslatorApp:
         If origin is "audio", the text is enqueued and processed sequentially via the audio queue.
         If origin is "text", the text is enqueued and processed sequentially via the text queue.
         """
+        # Remove newlines to reduce pauses in TTS for speech-to-speech conversion.
+        text = text.replace("\n", " ")
         if origin == "audio":
             self.audio_tts_queue.put(text)
             if not self.audio_tts_processing:
