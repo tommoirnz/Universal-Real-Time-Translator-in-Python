@@ -8,7 +8,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="ebooklib.epub")
 warnings.filterwarnings("ignore", category=FutureWarning, module="ebooklib.epub")
 
 import tkinter as tk  # Standard Python library for GUI applications
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont  # For dynamic font scaling
 import sounddevice as sd  # Access to audio input/output devices
 import numpy as np  # Numerical operations on arrays
@@ -30,18 +30,15 @@ if os.name == "nt":
     CREATE_NO_WINDOW = 0x08000000
     original_popen = subprocess.Popen
 
-
     def no_window_popen(*args, **kwargs):
         if os.name == "nt":
             kwargs.setdefault("creationflags", CREATE_NO_WINDOW)
         return original_popen(*args, **kwargs)
 
-
     subprocess.Popen = no_window_popen
 
 import edge_tts  # Text-to-Speech library using Microsoft Edge
 from pydub import AudioSegment  # For audio format conversion
-import tempfile
 import sys
 from collections import OrderedDict  # For implementing an LRU cache
 import io
@@ -123,7 +120,19 @@ class TranslatorApp:
         self.text_segment_index = 0  # Current segment index
         self.text_reading_active = True
         self.last_spoken_text = ""
-        self.input_text_box = None  # Will store reference to the text input widget
+        self.input_text_box = None  # Reference to the text input widget
+
+        # New attribute to keep track of which text should be spoken.
+        self.current_tts_text = ""
+
+        # New TTS queues and processing flags for audio and text inputs.
+        self.audio_tts_queue = queue.Queue()
+        self.audio_tts_processing = False
+        self.text_tts_queue = queue.Queue()
+        self.text_tts_processing = False
+
+        # This flag distinguishes the source of TTS (audio or text).
+        self.tts_input_source = "audio"  # default; will be set to "text" for text input
 
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
@@ -339,8 +348,9 @@ class TranslatorApp:
         Open a window for text input.
         This window includes:
           - A text widget for entering or pasting text.
-          - A vertical slider (to indicate progress).
-          - Buttons: Submit, Pause Reading, Resume Reading, Read from File, Jump, and Close.
+          - A vertical slider (to indicate progress) that updates the highlight in real time.
+          - Buttons: Submit, Pause Reading, Resume Reading, Read from File, and Close.
+          - The slider automatically pauses text reading on press and resumes (jumping to the new segment) on release.
         """
         text_window = tk.Toplevel(self.root)
         text_window.title("Text Input")
@@ -362,8 +372,12 @@ class TranslatorApp:
         scrollbar.config(command=self.input_text_box.yview)
 
         # Vertical slider to show/jump position.
-        self.jump_slider = tk.Scale(main_frame, from_=1, to=1, orient="vertical", bg="#f4f4f4")
+        self.jump_slider = tk.Scale(main_frame, from_=1, to=1, orient="vertical", bg="#f4f4f4",
+                                    command=self.update_highlight_position)
         self.jump_slider.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
+        # Automatically pause text reading on slider press and resume (jump) on release.
+        self.jump_slider.bind("<ButtonPress-1>", lambda event: self.pause_text_reading())
+        self.jump_slider.bind("<ButtonRelease-1>", lambda event: self.jump_via_slider())
 
         # Button panel.
         button_frame = tk.Frame(text_window, bg="#f4f4f4")
@@ -390,22 +404,41 @@ class TranslatorApp:
                                      bg="#2196F3", fg="white", font=small_button_font,
                                      relief="raised", bd=4)
         read_file_button.pack(side=tk.LEFT, padx=5)
-        jump_button = tk.Button(button_frame, text="Jump",
-                                command=self.jump_via_slider,
-                                bg="#9C27B0", fg="white", font=small_button_font,
-                                relief="raised", bd=4)
-        jump_button.pack(side=tk.LEFT, padx=5)
         close_button = tk.Button(button_frame, text="Close",
                                  command=text_window.destroy,
                                  bg="#F44336", fg="white", font=small_button_font,
                                  relief="raised", bd=4)
         close_button.pack(side=tk.LEFT, padx=5)
 
+    def update_highlight_position(self, value):
+        """
+        Update the highlight in the text input box in real time as the slider moves.
+        Here we first ensure the start of the highlighted text is visible and then, after a short delay,
+        force the widget to also scroll to the end of the highlighted text.
+        """
+        if not self.text_segments or not self.input_text_box:
+            return
+        try:
+            new_index = int(value) - 1
+            if new_index < 0 or new_index >= len(self.text_segments):
+                return
+            cumulative_chars = sum(len(s) for s in self.text_segments[:new_index])
+            start_index = "1.0+" + str(cumulative_chars) + " chars"
+            end_index = "1.0+" + str(cumulative_chars + len(self.text_segments[new_index])) + " chars"
+            self.input_text_box.tag_remove("current", "1.0", tk.END)
+            self.input_text_box.tag_add("current", start_index, end_index)
+            self.input_text_box.tag_config("current", background="yellow")
+            # First, scroll so that the start is visible
+            self.input_text_box.see(start_index)
+            # Then, after a brief delay, scroll to the end so the whole block is visible.
+            self.root.after(50, lambda: self.input_text_box.see(end_index))
+        except Exception as e:
+            logging.error(f"Error in update_highlight_position: {e}")
+
     def jump_via_slider(self):
         """
-        When the Jump button is pressed, read the slider's current value,
-        update the reading index, scroll the input text widget to the new position,
-        and resume text reading from that segment.
+        When the slider is released, update the reading index based on the slider's current value,
+        scroll the text input widget to the new position, update the TTS text, and resume text reading from that segment.
         """
         if not self.text_segments:
             messagebox.showinfo("No Text", "No text has been loaded yet.")
@@ -416,15 +449,10 @@ class TranslatorApp:
             self.text_reading_active = True
             self.add_message_to_queue(f"Jumping to segment {new_index + 1}.\n")
             logging.info(f"Jumping to segment {new_index + 1}.")
-            # Compute cumulative characters from preceding segments.
             cumulative_chars = sum(len(s) for s in self.text_segments[:new_index])
             self.input_text_box.see("1.0+" + str(cumulative_chars) + " chars")
-            # Highlight the current segment.
-            self.input_text_box.tag_remove("current", "1.0", tk.END)
-            start_index = "1.0+" + str(cumulative_chars) + " chars"
-            end_index = "1.0+" + str(cumulative_chars + len(self.text_segments[new_index])) + " chars"
-            self.input_text_box.tag_add("current", start_index, end_index)
-            self.input_text_box.tag_config("current", background="yellow")
+            # Update current TTS text so that any ongoing speech will be cancelled.
+            self.current_tts_text = ""
             self.process_next_text_segment()
 
     def read_from_file(self, input_text_box):
@@ -451,10 +479,17 @@ class TranslatorApp:
         if not text:
             messagebox.showwarning("No Text", "Please paste some text before submitting.")
             return
+        # Set the TTS source to text so that TTS is handled via the text queue.
+        self.tts_input_source = "text"
         self.handle_text_input(text)
 
     def handle_text_input(self, text):
         self.add_message_to_queue(f"Text Input ({self.spoken_language_var.get()}): {text}\n")
+        # Clear the translated text box for the new run.
+        self.translated_text_box.delete("1.0", tk.END)
+        # Optionally, clear the translation cache if you want new translations every run.
+        with self.cache_lock:
+            self.translation_cache.clear()
         # Split text into segments by sentences.
         self.text_segments = re.split(r'(?<=[.!?])\s+', text)
         self.text_segment_index = 0
@@ -462,6 +497,8 @@ class TranslatorApp:
         if hasattr(self, 'jump_slider'):
             self.jump_slider.config(from_=1, to=len(self.text_segments))
             self.jump_slider.set(1)
+        # Set the current TTS text to empty so any old speech is cancelled.
+        self.current_tts_text = ""
         self.process_next_text_segment()
 
     def process_next_text_segment(self):
@@ -471,26 +508,32 @@ class TranslatorApp:
             return
         segment = self.text_segments[self.text_segment_index].strip().replace("\n", " ")
         self.text_segment_index += 1
-        if hasattr(self, 'jump_slider'):
-            self.jump_slider.set(self.text_segment_index)
+        # Check if jump_slider exists before updating it.
+        if hasattr(self, 'jump_slider') and self.jump_slider.winfo_exists():
+            try:
+                self.jump_slider.set(self.text_segment_index)
+            except Exception as e:
+                logging.error(f"Error updating jump_slider: {e}")
         # Auto scroll and highlight current segment.
         if self.input_text_box:
             cumulative_chars = sum(len(s) for s in self.text_segments[:self.text_segment_index - 1])
             self.input_text_box.see("1.0+" + str(cumulative_chars) + " chars")
             self.input_text_box.tag_remove("current", "1.0", tk.END)
             start_index = "1.0+" + str(cumulative_chars) + " chars"
-            end_index = "1.0+" + str(cumulative_chars + len(segment)) + " chars"
+            end_index = "1.0+" + str(cumulative_chars + len(self.text_segments[self.text_segment_index - 1])) + " chars"
             self.input_text_box.tag_add("current", start_index, end_index)
             self.input_text_box.tag_config("current", background="yellow")
+            self.input_text_box.see(start_index)
         if not segment:
             self.root.after(10, self.process_next_text_segment)
             return
-        if self.map_language_for_translation(self.current_target_language) != self.map_language_for_translation(
-                self.current_spoken_language):
+        if self.map_language_for_translation(self.current_target_language) != self.map_language_for_translation(self.current_spoken_language):
             translated_segment = self.translate_text(segment, self.current_target_language)
         else:
             translated_segment = segment
         self.add_translation_to_queue(f"{translated_segment}\n")
+        # For text input, the TTS source is "text" and will be handled in the text queue.
+        self.current_tts_text = translated_segment
         word_count = len(segment.split())
         delay = max(1000, int(word_count * 300))
         self.root.after(delay, self.process_next_text_segment)
@@ -550,6 +593,18 @@ class TranslatorApp:
             return language_name
         except Exception:
             return locale_code
+
+    # New function to highlight the current output sentence in the translation box
+    def highlight_current_output_sentence(self, sentence):
+        # Remove any previous highlight
+        self.translated_text_box.tag_remove("current_output", "1.0", tk.END)
+        # Find the index of the current sentence (assumes it was just inserted)
+        index = self.translated_text_box.search(sentence, "1.0", tk.END)
+        if index:
+            end_index = f"{index}+{len(sentence)}c"
+            self.translated_text_box.tag_add("current_output", index, end_index)
+            self.translated_text_box.tag_config("current_output", background="yellow")
+            logging.debug(f"Highlighted sentence from {index} to {end_index}.")
 
     def update_buffer_size(self, value):
         try:
@@ -757,11 +812,12 @@ class TranslatorApp:
 
     def insert_text_with_limit(self, text_widget, message, max_lines):
         text_widget.insert(tk.END, message)
-        text_widget.see(tk.END)
+        # Force the view to the bottom every time new text is inserted.
+        text_widget.yview_moveto(1.0)
         current_lines = int(text_widget.index('end-1c').split('.')[0])
         if current_lines > max_lines:
             lines_to_delete = current_lines - max_lines
-            text_widget.delete(f"1.0", f"{lines_to_delete + 1}.0")
+            text_widget.delete("1.0", f"{lines_to_delete + 1}.0")
             logging.debug(f"Deleted {lines_to_delete} lines from the text box to maintain max lines.")
 
     def update_textbox(self):
@@ -784,7 +840,7 @@ class TranslatorApp:
                     # Highlight the current sentence in the output translation box
                     self.highlight_current_output_sentence(new_text)
                     if new_text != self.last_spoken_text:
-                        self.speak_text(new_text)
+                        self.speak_text(new_text, origin=self.tts_input_source)
                         self.last_spoken_text = new_text
         except Exception as e:
             self.add_message_to_queue(f"Error updating translation box: {e}\n")
@@ -808,6 +864,8 @@ class TranslatorApp:
     def process_audio_buffer(self, spoken_language_code, target_language_code, audio_data):
         recognizer = sr.Recognizer()
         try:
+            # Set TTS source to audio for recognized speech.
+            self.tts_input_source = "audio"
             logging.debug("Processing audio buffer...")
             combined_audio = np.concatenate(audio_data, axis=0)
             audio_data_int16 = np.int16(combined_audio * 32767)
@@ -819,8 +877,7 @@ class TranslatorApp:
                 logging.debug(f"Recognized Text: {recognized_text}")
             else:
                 logging.debug("No meaningful text recognized.")
-            if self.map_language_for_translation(target_language_code) != self.map_language_for_translation(
-                    spoken_language_code):
+            if self.map_language_for_translation(target_language_code) != self.map_language_for_translation(spoken_language_code):
                 translated_text = self.translate_text(recognized_text, target_language_code)
                 if translated_text:
                     self.add_translation_to_queue(f"{translated_text}\n")
@@ -1036,17 +1093,20 @@ class TranslatorApp:
             self.add_message_to_queue(f"Error toggling TTS: {e}\n")
             logging.error(f"Error toggling TTS: {e}")
 
-    async def async_speak_text(self, text, retry_count=3):
+    async def async_speak_text(self, text, retry_count=3, origin="audio"):
         for attempt in range(1, retry_count + 1):
+            # Only for audio-originated requests, check cancellation.
+            if origin == "audio" and self.current_tts_text != text:
+                logging.debug("TTS text changed. Cancelling current TTS.")
+                return
             try:
                 if not self.tts_enabled.get():
                     logging.debug("TTS is disabled. Skipping speech synthesis.")
                     return
                 selected_voice_entry = self.voice_var.get()
-                selected_voice_name = selected_voice_entry.split(" - ")[
-                    1] if " - " in selected_voice_entry else selected_voice_entry
-                logging.debug(
-                    f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
+                selected_voice_name = (selected_voice_entry.split(" - ")[1]
+                                       if " - " in selected_voice_entry else selected_voice_entry)
+                logging.debug(f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
                 selected_voice = next((voice for voice in self.edge_tts_voices if
                                        self.strip_voice_prefix(voice['Name']) == selected_voice_name), None)
                 if not selected_voice:
@@ -1059,6 +1119,9 @@ class TranslatorApp:
                 communicate = edge_tts.Communicate(text, voice=voice)
                 mp3_buffer = io.BytesIO()
                 async for chunk in communicate.stream():
+                    if origin == "audio" and self.current_tts_text != text:
+                        logging.debug("TTS text changed during streaming. Cancelling current TTS.")
+                        return
                     if chunk["type"] == "audio":
                         mp3_buffer.write(chunk["data"])
                 if mp3_buffer.tell() == 0:
@@ -1120,15 +1183,64 @@ class TranslatorApp:
                     self.add_message_to_queue(final_error + "\n")
                     logging.error(final_error)
 
-    def speak_text(self, text):
-        if self.tts_enabled.get() and hasattr(self, 'tts_loop') and hasattr(self, 'edge_tts_voices'):
-            try:
-                coro = self.async_speak_text(text)
-                asyncio.run_coroutine_threadsafe(coro, self.tts_loop)
-                logging.debug(f"Scheduled TTS for text: {text}")
-            except Exception as e:
-                self.add_message_to_queue(f"Error scheduling TTS: {e}\n")
-                logging.error(f"Error scheduling TTS: {e}")
+    def speak_text(self, text, origin="audio"):
+        """
+        New speak_text method that accepts an origin parameter.
+        If origin is "audio", the text is enqueued and processed sequentially via the audio queue.
+        If origin is "text", the text is enqueued and processed sequentially via the text queue.
+        """
+        if origin == "audio":
+            self.audio_tts_queue.put(text)
+            if not self.audio_tts_processing:
+                self.process_audio_tts_queue()
+        else:  # origin == "text"
+            self.text_tts_queue.put(text)
+            if not self.text_tts_processing:
+                self.process_text_tts_queue()
+
+    def process_audio_tts_queue(self):
+        """
+        Process the audio TTS queue sequentially so that each audio-initiated TTS request
+        is allowed to complete before the next begins.
+        """
+        self.audio_tts_processing = True
+
+        def worker():
+            while not self.audio_tts_queue.empty():
+                audio_text = self.audio_tts_queue.get()
+                self.current_tts_text = audio_text
+                coro = self.async_speak_text(audio_text, origin="audio")
+                future = asyncio.run_coroutine_threadsafe(coro, self.tts_loop)
+                try:
+                    future.result()  # Wait for this TTS to complete.
+                except Exception as e:
+                    self.add_message_to_queue(f"Audio TTS error: {e}\n")
+                    logging.error(f"Audio TTS error: {e}")
+            self.audio_tts_processing = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def process_text_tts_queue(self):
+        """
+        Process the text TTS queue sequentially so that each text-initiated TTS request
+        is allowed to complete fully.
+        """
+        self.text_tts_processing = True
+
+        def worker():
+            while not self.text_tts_queue.empty():
+                text_to_speak = self.text_tts_queue.get()
+                # For text, we do not update self.current_tts_text so that cancellation check is skipped.
+                coro = self.async_speak_text(text_to_speak, origin="text")
+                future = asyncio.run_coroutine_threadsafe(coro, self.tts_loop)
+                try:
+                    future.result()  # Wait for this TTS to complete.
+                except Exception as e:
+                    self.add_message_to_queue(f"Text TTS error: {e}\n")
+                    logging.error(f"Text TTS error: {e}")
+            self.text_tts_processing = False
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def get_output_devices(self):
         try:
@@ -1275,18 +1387,6 @@ class TranslatorApp:
                 if country:
                     return country.name
         return ""
-
-    # New function to highlight the current output sentence in the translation box
-    def highlight_current_output_sentence(self, sentence):
-        # Remove any previous highlight
-        self.translated_text_box.tag_remove("current_output", "1.0", tk.END)
-        # Find the index of the current sentence (assumes it was just inserted)
-        index = self.translated_text_box.search(sentence, "1.0", tk.END)
-        if index:
-            end_index = f"{index}+{len(sentence)}c"
-            self.translated_text_box.tag_add("current_output", index, end_index)
-            self.translated_text_box.tag_config("current_output", background="yellow")
-            logging.debug(f"Highlighted sentence from {index} to {end_index}.")
 
     def get_full_language_name(self, locale_code):
         try:
