@@ -45,7 +45,8 @@ import io
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import pycountry
-
+#Finalised 23/02/2025 Auckland New Zealand
+#Tom Moir and ChatGPT o1 mini and o3 mini (mostly)
 # Configure logging to write debug and error messages to a file in the user's home directory.
 log_file = os.path.join(os.path.expanduser("~"), "translator_app_debug.log")
 logging.basicConfig(
@@ -273,7 +274,7 @@ class TranslatorApp:
                                                 state="readonly", font=self.dropdown_font)
         target_language_dropdown.pack(anchor="w", pady=(0, 5))
         self.swap_button = tk.Button(lang_frame, text="Swap Languages", command=self.swap_languages,
-                                     bg="#FFC107", fg="black", font=self.main_button_font, relief="raised", bd=4)
+                                     bg="silver", fg="black", font=self.main_button_font, relief="raised", bd=4)
         self.swap_button.pack(anchor="w", pady=(0, 5))
 
         # Device selection controls.
@@ -296,20 +297,20 @@ class TranslatorApp:
         button_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         button_frame.pack(pady=int(7.5 * self.scale_factor))
         self.start_button = tk.Button(button_frame, text="Start Audio Capture",
-                                      command=self.toggle_recognition, bg="#4CAF50", fg="white",
+                                      command=self.toggle_recognition, bg="silver", fg="black",
                                       font=self.main_button_font, relief="raised", bd=4)
         self.start_button.pack(side=tk.LEFT, padx=5)
         flush_button = tk.Button(button_frame, text="Flush Buffers",
-                                 command=self.flush_buffers, bg="#4CAF50", fg="white",
+                                 command=self.flush_buffers, bg="silver", fg="black",
                                  font=self.main_button_font, relief="raised", bd=4)
         flush_button.pack(side=tk.LEFT, padx=5)
         # Two separate buttons for text input:
         read_file_button = tk.Button(button_frame, text="Read File",
-                                     command=self.open_listbox_input_window, bg="#2196F3", fg="white",
+                                     command=self.open_listbox_input_window, bg="silver", fg="black",
                                      font=self.main_button_font, relief="raised", bd=4)
         read_file_button.pack(side=tk.LEFT, padx=5)
         enter_text_button = tk.Button(button_frame, text="Enter Text",
-                                      command=self.open_textbox_input_window, bg="#8BC34A", fg="white",
+                                      command=self.open_textbox_input_window, bg="silver", fg="black",
                                       font=self.main_button_font, relief="raised", bd=4)
         enter_text_button.pack(side=tk.LEFT, padx=5)
         gain_slider = tk.Scale(bottom_frame, from_=1.0, to_=4.0, resolution=0.1,
@@ -339,16 +340,16 @@ class TranslatorApp:
         bottom_button_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         bottom_button_frame.pack(pady=int(7.5 * self.scale_factor))
         save_button = tk.Button(bottom_button_frame, text="Save Transcript",
-                                command=self.save_transcript, bg="#4CAF50",
-                                fg="white", font=self.main_button_font, relief="raised", bd=4)
+                                command=self.save_transcript, bg="silver", fg="black",
+                                font=self.main_button_font, relief="raised", bd=4)
         save_button.pack(side=tk.LEFT, padx=5)
         exit_button = tk.Button(bottom_button_frame, text="Halt and Clean Exit",
-                                command=self.halt_and_exit, bg="red", fg="white",
+                                command=self.halt_and_exit, bg="silver", fg="black",
                                 font=self.main_button_font, relief="raised", bd=4)
         exit_button.pack(side=tk.LEFT, padx=5)
         minimize_button = tk.Button(bottom_button_frame, text="Minimize to Tray",
-                                    command=self.minimize_to_tray, bg="#FFC107",
-                                    fg="black", font=self.main_button_font, relief="raised", bd=4)
+                                    command=self.minimize_to_tray, bg="silver", fg="black",
+                                    font=self.main_button_font, relief="raised", bd=4)
         minimize_button.pack(side=tk.LEFT, padx=5)
 
         # Create the separate translation window.
@@ -405,27 +406,27 @@ class TranslatorApp:
                                         size=int(self.main_button_font.actual("size") * 0.75))
         load_file_button = tk.Button(button_frame, text="Load File",
                                      command=self.read_into_listbox,
-                                     bg="#2196F3", fg="white", font=small_button_font,
+                                     bg="silver", fg="black", font=small_button_font,
                                      relief="raised", bd=4)
         load_file_button.pack(side=tk.LEFT, padx=5)
         submit_button = tk.Button(button_frame, text="Submit",
                                   command=self.submit_listbox_input,
-                                  bg="#4CAF50", fg="white", font=small_button_font,
+                                  bg="silver", fg="black", font=small_button_font,
                                   relief="raised", bd=4)
         submit_button.pack(side=tk.LEFT, padx=5)
         pause_button = tk.Button(button_frame, text="Pause Reading",
                                  command=self.pause_text_reading,
-                                 bg="#F44336", fg="white", font=small_button_font,
+                                 bg="silver", fg="black", font=small_button_font,
                                  relief="raised", bd=4)
         pause_button.pack(side=tk.LEFT, padx=5)
         resume_button = tk.Button(button_frame, text="Resume Reading",
                                   command=self.resume_text_reading,
-                                  bg="#4CAF50", fg="white", font=small_button_font,
+                                  bg="silver", fg="black", font=small_button_font,
                                   relief="raised", bd=4)
         resume_button.pack(side=tk.LEFT, padx=5)
         close_button = tk.Button(button_frame, text="Close",
                                  command=text_window.destroy,
-                                 bg="#F44336", fg="white", font=small_button_font,
+                                 bg="silver", fg="black", font=small_button_font,
                                  relief="raised", bd=4)
         close_button.pack(side=tk.LEFT, padx=5)
 
@@ -515,22 +516,22 @@ class TranslatorApp:
                                         size=int(self.main_button_font.actual("size") * 0.75))
         submit_button = tk.Button(button_frame, text="Submit",
                                   command=lambda: self.submit_text_input(self.input_text_box),
-                                  bg="#4CAF50", fg="white", font=small_button_font,
+                                  bg="silver", fg="black", font=small_button_font,
                                   relief="raised", bd=4)
         submit_button.pack(side=tk.LEFT, padx=5)
         pause_button = tk.Button(button_frame, text="Pause Reading",
                                  command=self.pause_text_reading,
-                                 bg="#F44336", fg="white", font=small_button_font,
+                                 bg="silver", fg="black", font=small_button_font,
                                  relief="raised", bd=4)
         pause_button.pack(side=tk.LEFT, padx=5)
         resume_button = tk.Button(button_frame, text="Resume Reading",
                                   command=self.resume_text_reading,
-                                  bg="#4CAF50", fg="white", font=small_button_font,
+                                  bg="silver", fg="black", font=small_button_font,
                                   relief="raised", bd=4)
         resume_button.pack(side=tk.LEFT, padx=5)
         close_button = tk.Button(button_frame, text="Close",
                                  command=text_window.destroy,
-                                 bg="#F44336", fg="white", font=small_button_font,
+                                 bg="silver", fg="black", font=small_button_font,
                                  relief="raised", bd=4)
         close_button.pack(side=tk.LEFT, padx=5)
 
@@ -713,6 +714,7 @@ class TranslatorApp:
         self.add_translation_to_queue(f"{translated_segment}\n")
         self.current_tts_text = translated_segment
         word_count = len(segment.split())
+        # The delay is calculated here: a minimum of 1000 ms and a multiplier of 500 ms per word.
         delay = max(1000, int(word_count * 500))
         self.root.after(delay, self.process_next_text_segment)
 
@@ -857,7 +859,7 @@ class TranslatorApp:
         # New button to save the translation output.
         save_output_button = tk.Button(translation_window, text="Save Output",
                                        command=self.save_translation_output,
-                                       bg="#4CAF50", fg="white", font=self.main_button_font,
+                                       bg="silver", fg="black", font=self.main_button_font,
                                        relief="raised", bd=4)
         save_output_button.place(relx=0.95, rely=0.95, anchor="se")
 
@@ -897,14 +899,8 @@ class TranslatorApp:
             original_spoken = self.spoken_language_var.get()
             self.spoken_language_var.set(self.target_language_var.get())
             self.target_language_var.set(original_spoken)
-            if not self.languages_swapped:
-                self.swap_button.config(text="Swap Back", bg="#4CAF50")
-                self.languages_swapped = True
-                logging.info("Languages swapped: Spoken and target languages exchanged.")
-            else:
-                self.swap_button.config(text="Swap Languages", bg="#FFC107")
-                self.languages_swapped = False
-                logging.info("Languages swapped back to original configuration.")
+            self.swap_button.config(text="Swap Languages", bg="silver", fg="black")
+            logging.info("Languages swapped: Spoken and target languages exchanged.")
         except Exception as e:
             self.add_message_to_queue(f"Error swapping languages: {e}\n")
             logging.error(f"Error swapping languages: {e}")
@@ -956,9 +952,8 @@ class TranslatorApp:
 
     def minimize_to_tray(self):
         try:
-            icon_image = Image.new('RGB', (64, 64), (255, 255, 255))
-            draw = ImageDraw.Draw(icon_image)
-            draw.rectangle((0, 0, 64, 64), fill=(0, 100, 255))
+            # Load the custom icon from "icon.ico"
+            icon_image = Image.open("icon.ico")
             icon_image = icon_image.resize((64, 64))
             menu = Menu(MenuItem('Restore', self.restore_from_tray), MenuItem('Exit', self.halt_and_exit))
             self.tray_icon = Icon("TranslatorApp", icon_image, "Translator", menu)
@@ -986,19 +981,20 @@ class TranslatorApp:
             "Corsican": "co", "Croatian": "hr", "Czech": "cs", "Danish": "da", "Dutch": "nl", "English (US)": "en-US",
             "English (UK)": "en-GB", "Esperanto": "eo", "Estonian": "et", "Filipino": "tl", "Finnish": "fi",
             "French": "fr", "Frisian": "fy", "Galician": "gl", "Georgian": "ka", "German": "de", "Greek Modern": "el",
-            "Gujarati": "gu", "Haitian Creole": "ht", "Hausa": "ha", "Hebrew": "he", "Hindi": "hi", "Hmong": "hmn",
-            "Hungarian": "hu", "Icelandic": "is", "Igbo": "ig", "Indonesian": "id", "Irish": "ga", "Italian": "it",
-            "Japanese": "ja", "Javanese": "jw", "Kannada": "kn", "Kazakh": "kk", "Khmer": "km", "Kinyarwanda": "rw",
-            "Korean": "ko", "Kurdish (Kurmanji)": "ku", "Kyrgyz": "ky", "Lao": "lo", "Latin": "la", "Latvian": "lv",
-            "Lithuanian": "lt", "Luxembourgish": "lb", "Macedonian": "mk", "Malagasy": "mg", "Malay": "ms",
-            "Malayalam": "ml", "Maltese": "mt", "Maori": "mi", "Marathi": "mr", "Mongolian": "mn",
-            "Myanmar": "my", "Nepali": "ne", "Norwegian": "no", "Odia": "or", "Pashto": "ps", "Persian": "fa",
-            "Polish": "pl", "Portuguese": "pt", "Punjabi": "pa", "Romanian": "ro", "Russian": "ru", "Samoan": "sm",
-            "Scots Gaelic": "gd", "Serbian": "sr", "Sesotho": "st", "Shona": "sn", "Sindhi": "sd", "Sinhala": "si",
-            "Slovak": "sk", "Slovenian": "sl", "Somali": "so", "Spanish": "es", "Sundanese": "su", "Swahili": "sw",
-            "Swedish": "sv", "Tajik": "tg", "Tamil": "ta", "Tatar": "tt", "Telugu": "te", "Thai": "th",
-            "Turkish": "tr", "Turkmen": "tk", "Ukrainian": "uk", "Urdu": "ur", "Uyghur": "ug", "Uzbek": "uz",
-            "Vietnamese": "vi", "Welsh": "cy", "Xhosa": "xh", "Yiddish": "yi", "Yoruba": "yo", "Zulu": "zu"
+            "Gujarati": "gu", "Haitian Creole": "ht", "Hausa": "ha", "Hebrew": "iw",  # Hebrew mapping updated
+            "Hindi": "hi", "Hmong": "hmn", "Hungarian": "hu", "Icelandic": "is", "Igbo": "ig", "Indonesian": "id",
+            "Irish": "ga", "Italian": "it", "Japanese": "ja", "Javanese": "jw", "Kannada": "kn", "Kazakh": "kk",
+            "Khmer": "km", "Kinyarwanda": "rw", "Korean": "ko", "Kurdish (Kurmanji)": "ku", "Kyrgyz": "ky",
+            "Lao": "lo", "Latin": "la", "Latvian": "lv", "Lithuanian": "lt", "Luxembourgish": "lb",
+            "Macedonian": "mk", "Malagasy": "mg", "Malay": "ms", "Malayalam": "ml", "Maltese": "mt", "Maori": "mi",
+            "Marathi": "mr", "Mongolian": "mn", "Myanmar": "my", "Nepali": "ne", "Norwegian": "no", "Odia": "or",
+            "Pashto": "ps", "Persian": "fa", "Polish": "pl", "Portuguese": "pt", "Punjabi": "pa", "Romanian": "ro",
+            "Russian": "ru", "Samoan": "sm", "Scots Gaelic": "gd", "Serbian": "sr", "Sesotho": "st", "Shona": "sn",
+            "Sindhi": "sd", "Sinhala": "si", "Slovak": "sk", "Slovenian": "sl", "Somali": "so", "Spanish": "es",
+            "Sundanese": "su", "Swahili": "sw", "Swedish": "sv", "Tajik": "tg", "Tamil": "ta", "Tatar": "tt",
+            "Telugu": "te", "Thai": "th", "Turkish": "tr", "Turkmen": "tk", "Ukrainian": "uk", "Urdu": "ur",
+            "Uyghur": "ug", "Uzbek": "uz", "Vietnamese": "vi", "Welsh": "cy", "Xhosa": "xh", "Yiddish": "yi",
+            "Yoruba": "yo", "Zulu": "zu"
         }
 
     def add_message_to_queue(self, message):
@@ -1180,7 +1176,7 @@ class TranslatorApp:
         try:
             self.is_listening = not self.is_listening
             if self.is_listening:
-                self.start_button.config(text="Stop Audio Capture", bg="red")
+                self.start_button.config(text="Stop Audio Capture", bg="silver", fg="black")
                 device_index = self.get_selected_device_index()
                 if device_index is not None:
                     self.audio_stop_event.clear()
@@ -1191,7 +1187,7 @@ class TranslatorApp:
                     logging.info("Audio capture started.")
                     self.disable_buffer_size_control()
             else:
-                self.start_button.config(text="Start Audio Capture", bg="#4CAF50")
+                self.start_button.config(text="Start Audio Capture", bg="silver", fg="black")
                 self.add_message_to_queue("Stopped listening.\n")
                 logging.info("Audio capture stopped.")
                 self.audio_stop_event.set()
@@ -1268,6 +1264,9 @@ class TranslatorApp:
             logging.error("Invalid gain value entered.")
 
     def map_language_for_translation(self, lang_code):
+        # Ensure that Hebrew is mapped to 'iw'
+        if lang_code in ["he", "iw"]:
+            return "iw"
         mapping = {
             'af': 'af', 'sq': 'sq', 'am': 'am', 'ar': 'ar', 'hy': 'hy', 'az': 'az',
             'eu': 'eu', 'be': 'be', 'bn': 'bn', 'bs': 'bs', 'bg': 'bg', 'ca': 'ca',
@@ -1275,7 +1274,7 @@ class TranslatorApp:
             'co': 'co', 'hr': 'hr', 'cs': 'cs', 'da': 'da', 'nl': 'nl', 'en': 'en',
             'en-US': 'en', 'en-GB': 'en', 'eo': 'eo', 'et': 'et', 'tl': 'tl', 'fi': 'fi',
             'fr': 'fr', 'fy': 'fy', 'gl': 'gl', 'ka': 'ka', 'de': 'de', 'el': 'el',
-            'gu': 'gu', 'ht': 'ht', 'ha': 'ha', 'he': 'he', 'hi': 'hi', 'hmn': 'hmn',
+            'gu': 'gu', 'ht': 'ht', 'ha': 'ha', 'hi': 'hi', 'hmn': 'hmn',
             'hu': 'hu', 'is': 'is', 'ig': 'ig', 'id': 'id', 'ga': 'ga', 'it': 'it',
             'ja': 'ja', 'jw': 'jw', 'kn': 'kn', 'kk': 'kk', 'km': 'km', 'rw': 'rw',
             'ko': 'ko', 'ku': 'ku', 'ky': 'ky', 'lo': 'lo', 'la': 'la', 'lv': 'lv',
