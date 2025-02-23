@@ -28,7 +28,7 @@ a video of it working!
 Requirements file is requirements.txt
 use.  pip install -r requirements.txt
 
-Note latest update reads text files and epub files.
+Note latest update reads text files and epub files. I attach a couple of open source book extracts to test out the file read and experimentation. 
 
 Tom Moir
 tomspeechnz@gmail.com
