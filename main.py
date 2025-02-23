@@ -2,7 +2,7 @@ import os
 import subprocess
 import re  # For sentence splitting
 import warnings
-
+# This is the most fully functional version to date with text box and listbox input from file
 # Optionally, filter out EbookLib warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="ebooklib.epub")
 warnings.filterwarnings("ignore", category=FutureWarning, module="ebooklib.epub")
@@ -120,7 +120,9 @@ class TranslatorApp:
         self.text_segment_index = 0  # Current segment index
         self.text_reading_active = True
         self.last_spoken_text = ""
-        self.input_text_box = None  # Reference to the text input widget
+        # For file-based input, we use a Listbox; for manual entry, a Text widget.
+        self.input_listbox = None
+        self.input_text_box = None
 
         # New attribute to keep track of which text should be spoken.
         self.current_tts_text = ""
@@ -132,7 +134,11 @@ class TranslatorApp:
         self.text_tts_processing = False
 
         # This flag distinguishes the source of TTS (audio or text).
-        self.tts_input_source = "audio"  # default; will be set to "text" for text input
+        self.tts_input_source = "audio"  # default; will be set to "text" for manual text entry
+
+        # For audio input accumulation of translated text (to reduce pauses)
+        self.audio_tts_buffer = ""
+        self.audio_tts_timer = None
 
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
@@ -249,7 +255,7 @@ class TranslatorApp:
 
         # Language selection controls.
         lang_frame = tk.Frame(top_frame, bg="#e0e0e0")
-        lang_frame.pack(side="top", anchor="w", fill="x", padx=0)
+        lang_frame.pack(side=tk.TOP, anchor="w", fill="x", padx=0)
         spoken_language_label = tk.Label(lang_frame, text="Select Spoken Language:", bg="#e0e0e0",
                                          fg="black", font=self.label_font)
         spoken_language_label.pack(anchor="w")
@@ -272,7 +278,7 @@ class TranslatorApp:
 
         # Device selection controls.
         device_frame = tk.Frame(top_frame, bg="#e0e0e0")
-        device_frame.pack(side="top", anchor="w", fill="x", padx=(60, 0),
+        device_frame.pack(side=tk.TOP, anchor="w", fill="x", padx=(60, 0),
                           pady=(int(7.5 * self.scale_factor), 0))
         device_label = tk.Label(device_frame, text="Select Microphone Device:", bg="#e0e0e0",
                                 fg="black", font=self.label_font)
@@ -297,10 +303,15 @@ class TranslatorApp:
                                  command=self.flush_buffers, bg="#4CAF50", fg="white",
                                  font=self.main_button_font, relief="raised", bd=4)
         flush_button.pack(side=tk.LEFT, padx=5)
-        text_input_button = tk.Button(button_frame, text="Text Input",
-                                      command=self.open_text_input_window, bg="#2196F3", fg="white",
+        # Two separate buttons for text input:
+        read_file_button = tk.Button(button_frame, text="Read File",
+                                     command=self.open_listbox_input_window, bg="#2196F3", fg="white",
+                                     font=self.main_button_font, relief="raised", bd=4)
+        read_file_button.pack(side=tk.LEFT, padx=5)
+        enter_text_button = tk.Button(button_frame, text="Enter Text",
+                                      command=self.open_textbox_input_window, bg="#8BC34A", fg="white",
                                       font=self.main_button_font, relief="raised", bd=4)
-        text_input_button.pack(side=tk.LEFT, padx=5)
+        enter_text_button.pack(side=tk.LEFT, padx=5)
         gain_slider = tk.Scale(bottom_frame, from_=1.0, to_=4.0, resolution=0.1,
                                orient="horizontal", label="Mic Gain",
                                length=int(225 * self.scale_factor),
@@ -324,7 +335,7 @@ class TranslatorApp:
                                               bd=3, relief="sunken")
         self.output_window_text_box.pack(side=tk.LEFT, padx=int(7.5 * self.scale_factor),
                                          pady=int(7.5 * self.scale_factor))
-        # New bottom button frame with Save Transcript, Halt and Clean Exit, and Minimize to Tray on one line.
+        # Bottom button frame for Save Transcript, Halt and Clean Exit, and Minimize to Tray.
         bottom_button_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         bottom_button_frame.pack(pady=int(7.5 * self.scale_factor))
         save_button = tk.Button(bottom_button_frame, text="Save Transcript",
@@ -343,17 +354,123 @@ class TranslatorApp:
         # Create the separate translation window.
         self.create_translation_window()
 
-    def open_text_input_window(self):
+    def open_listbox_input_window(self):
         """
-        Open a window for text input.
-        This window includes:
-          - A text widget for entering or pasting text.
-          - A vertical slider (to indicate progress) that updates the highlight in real time.
-          - Buttons: Submit, Pause Reading, Resume Reading, Read from File, and Close.
-          - The slider automatically pauses text reading on press and resumes (jumping to the new segment) on release.
+        Open a window for file-based text input.
+        This window uses a Listbox to display text line-by-line.
+        It includes a scrollbar, master and vernier sliders for selection,
+        a "Load File" button, and a Close button.
         """
+        # Clear any existing input widget reference
+        self.input_listbox = None
+        self.input_text_box = None
+
         text_window = tk.Toplevel(self.root)
-        text_window.title("Text Input")
+        text_window.title("Read File (Listbox)")
+        text_window.geometry(f"{int(600 * self.scale_factor)}x{int(400 * self.scale_factor)}")
+        text_window.configure(bg="#f4f4f4")
+
+        main_frame = tk.Frame(text_window, bg="#f4f4f4")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Listbox with scrollbar.
+        listbox_frame = tk.Frame(main_frame, bg="#f4f4f4")
+        listbox_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        list_scrollbar = tk.Scrollbar(listbox_frame)
+        list_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.input_listbox = tk.Listbox(listbox_frame, font=self.text_font, yscrollcommand=list_scrollbar.set)
+        self.input_listbox.pack(fill=tk.BOTH, expand=True)
+        list_scrollbar.config(command=self.input_listbox.yview)
+
+        # Slider frame for master and vernier sliders.
+        slider_frame = tk.Frame(main_frame, bg="#f4f4f4")
+        slider_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
+        self.jump_slider = tk.Scale(slider_frame, from_=1, to=1, orient="vertical", bg="#f4f4f4",
+                                    command=self.listbox_update_selection)
+        self.jump_slider.pack(side=tk.LEFT, fill=tk.Y)
+        self.jump_slider.bind("<ButtonPress-1>", lambda event: self.pause_text_reading())
+        self.jump_slider.bind("<ButtonRelease-1>", lambda event: self.jump_via_listbox())
+        self.vernier_slider = tk.Scale(slider_frame, from_=-9, to=9, orient="vertical", resolution=1,
+                                       bg="#f4f4f4", length=int(150 * self.scale_factor))
+        self.vernier_slider.set(0)
+        self.vernier_slider.pack(side=tk.LEFT, fill=tk.Y, padx=(5, 0))
+        self.vernier_slider.bind("<ButtonPress-1>", self.vernier_press)
+        self.vernier_slider.bind("<B1-Motion>", self.vernier_motion)
+        self.vernier_slider.bind("<ButtonRelease-1>", self.vernier_release)
+
+        # Button panel.
+        button_frame = tk.Frame(text_window, bg="#f4f4f4")
+        button_frame.pack(pady=10, anchor="w")
+        small_button_font = tkfont.Font(family=self.main_button_font.actual("family"),
+                                        size=int(self.main_button_font.actual("size") * 0.75))
+        load_file_button = tk.Button(button_frame, text="Load File",
+                                     command=self.read_into_listbox,
+                                     bg="#2196F3", fg="white", font=small_button_font,
+                                     relief="raised", bd=4)
+        load_file_button.pack(side=tk.LEFT, padx=5)
+        submit_button = tk.Button(button_frame, text="Submit",
+                                  command=self.submit_listbox_input,
+                                  bg="#4CAF50", fg="white", font=small_button_font,
+                                  relief="raised", bd=4)
+        submit_button.pack(side=tk.LEFT, padx=5)
+        pause_button = tk.Button(button_frame, text="Pause Reading",
+                                 command=self.pause_text_reading,
+                                 bg="#F44336", fg="white", font=small_button_font,
+                                 relief="raised", bd=4)
+        pause_button.pack(side=tk.LEFT, padx=5)
+        resume_button = tk.Button(button_frame, text="Resume Reading",
+                                  command=self.resume_text_reading,
+                                  bg="#4CAF50", fg="white", font=small_button_font,
+                                  relief="raised", bd=4)
+        resume_button.pack(side=tk.LEFT, padx=5)
+        close_button = tk.Button(button_frame, text="Close",
+                                 command=text_window.destroy,
+                                 bg="#F44336", fg="white", font=small_button_font,
+                                 relief="raised", bd=4)
+        close_button.pack(side=tk.LEFT, padx=5)
+
+        # If the listbox already has items, update slider range.
+        if self.input_listbox.size() > 0:
+            self.text_segments = self.input_listbox.get(0, tk.END)
+            self.jump_slider.config(from_=1, to=len(self.text_segments))
+            self.jump_slider.set(1)
+
+    def read_into_listbox(self):
+        file_path = filedialog.askopenfilename(
+            title="Select a file",
+            filetypes=[("Text files", "*.txt"), ("EPUB files", "*.epub")]
+        )
+        if not file_path:
+            return
+        try:
+            if file_path.lower().endswith(".epub"):
+                full_text = epub_to_text(file_path)
+                logging.info(f"Extracted {len(full_text)} characters from EPUB file.")
+            else:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    full_text = f.read()
+            self.text_segments = re.split(r'(?<=[.!?])\s+', full_text.strip())
+            self.input_listbox.delete(0, tk.END)
+            for seg in self.text_segments:
+                self.input_listbox.insert(tk.END, seg)
+            if self.text_segments:
+                self.jump_slider.config(from_=1, to=len(self.text_segments))
+                self.jump_slider.set(1)
+        except Exception as e:
+            messagebox.showerror("File Read Error", f"Error reading file: {e}")
+
+    def open_textbox_input_window(self):
+        """
+        Open a window for manual text entry.
+        This window uses a Text widget for free-form entry and includes a scrollbar,
+        master and vernier sliders for navigation, and Submit/Close buttons.
+        """
+        # Clear any file input reference
+        self.input_text_box = None
+        self.input_listbox = None
+
+        text_window = tk.Toplevel(self.root)
+        text_window.title("Enter Text")
         text_window.geometry(f"{int(600 * self.scale_factor)}x{int(400 * self.scale_factor)}")
         text_window.configure(bg="#f4f4f4")
 
@@ -371,13 +488,25 @@ class TranslatorApp:
         self.input_text_box.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.input_text_box.yview)
 
-        # Vertical slider to show/jump position.
-        self.jump_slider = tk.Scale(main_frame, from_=1, to=1, orient="vertical", bg="#f4f4f4",
+        # For textbox mode, we will still create a list of segments for navigation.
+        # Initially, text_segments is empty.
+        self.text_segments = []
+
+        # Slider frame for master and vernier sliders.
+        slider_frame = tk.Frame(main_frame, bg="#f4f4f4")
+        slider_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
+        self.jump_slider = tk.Scale(slider_frame, from_=1, to=1, orient="vertical", bg="#f4f4f4",
                                     command=self.update_highlight_position)
-        self.jump_slider.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
-        # Automatically pause text reading on slider press and resume (jump) on release.
+        self.jump_slider.pack(side=tk.LEFT, fill=tk.Y)
         self.jump_slider.bind("<ButtonPress-1>", lambda event: self.pause_text_reading())
-        self.jump_slider.bind("<ButtonRelease-1>", lambda event: self.jump_via_slider())
+        self.jump_slider.bind("<ButtonRelease-1>", lambda event: self.jump_via_textbox())
+        self.vernier_slider = tk.Scale(slider_frame, from_=-9, to=9, orient="vertical", resolution=1,
+                                       bg="#f4f4f4", length=int(150 * self.scale_factor))
+        self.vernier_slider.set(0)
+        self.vernier_slider.pack(side=tk.LEFT, fill=tk.Y, padx=(5, 0))
+        self.vernier_slider.bind("<ButtonPress-1>", self.vernier_press)
+        self.vernier_slider.bind("<B1-Motion>", self.vernier_motion)
+        self.vernier_slider.bind("<ButtonRelease-1>", self.vernier_release_textbox)
 
         # Button panel.
         button_frame = tk.Frame(text_window, bg="#f4f4f4")
@@ -399,23 +528,68 @@ class TranslatorApp:
                                   bg="#4CAF50", fg="white", font=small_button_font,
                                   relief="raised", bd=4)
         resume_button.pack(side=tk.LEFT, padx=5)
-        read_file_button = tk.Button(button_frame, text="Read from File",
-                                     command=lambda: self.read_from_file(self.input_text_box),
-                                     bg="#2196F3", fg="white", font=small_button_font,
-                                     relief="raised", bd=4)
-        read_file_button.pack(side=tk.LEFT, padx=5)
         close_button = tk.Button(button_frame, text="Close",
                                  command=text_window.destroy,
                                  bg="#F44336", fg="white", font=small_button_font,
                                  relief="raised", bd=4)
         close_button.pack(side=tk.LEFT, padx=5)
 
+    def listbox_update_selection(self, value):
+        try:
+            idx = int(value) - 1
+            if 0 <= idx < self.input_listbox.size():
+                self.input_listbox.selection_clear(0, tk.END)
+                self.input_listbox.selection_set(idx)
+                self.input_listbox.see(idx)
+        except Exception as e:
+            logging.error(f"Error updating listbox selection: {e}")
+
+    def vernier_press(self, event):
+        self.pause_text_reading()
+
+    def vernier_motion(self, event):
+        try:
+            offset = int(self.vernier_slider.get())
+            current = int(self.jump_slider.get())
+            master_from = int(self.jump_slider.cget("from"))
+            master_to = int(self.jump_slider.cget("to"))
+            temp_value = max(master_from, min(current + offset, master_to))
+            if self.input_listbox:
+                self.listbox_update_selection(str(temp_value))
+            elif self.input_text_box:
+                self.update_highlight_position(str(temp_value))
+        except Exception as e:
+            logging.error(f"Error during vernier motion: {e}")
+
+    def vernier_release(self, event):
+        # For listbox window
+        try:
+            offset = int(self.vernier_slider.get())
+            current = int(self.jump_slider.get())
+            master_from = int(self.jump_slider.cget("from"))
+            master_to = int(self.jump_slider.cget("to"))
+            new_value = max(master_from, min(current + offset, master_to))
+            self.jump_slider.set(new_value)
+            self.jump_via_listbox()
+        finally:
+            self.vernier_slider.set(0)
+            self.resume_text_reading()
+
+    def vernier_release_textbox(self, event):
+        # For textbox window
+        try:
+            offset = int(self.vernier_slider.get())
+            current = int(self.jump_slider.get())
+            master_from = int(self.jump_slider.cget("from"))
+            master_to = int(self.jump_slider.cget("to"))
+            new_value = max(master_from, min(current + offset, master_to))
+            self.jump_slider.set(new_value)
+            self.jump_via_textbox()
+        finally:
+            self.vernier_slider.set(0)
+            self.resume_text_reading()
+
     def update_highlight_position(self, value):
-        """
-        Update the highlight in the text input box in real time as the slider moves.
-        Here we first ensure the start of the highlighted text is visible and then, after a short delay,
-        force the widget to also scroll to the end of the highlighted text.
-        """
         if not self.text_segments or not self.input_text_box:
             return
         try:
@@ -428,18 +602,12 @@ class TranslatorApp:
             self.input_text_box.tag_remove("current", "1.0", tk.END)
             self.input_text_box.tag_add("current", start_index, end_index)
             self.input_text_box.tag_config("current", background="yellow")
-            # First, scroll so that the start is visible
             self.input_text_box.see(start_index)
-            # Then, after a brief delay, scroll to the end so the whole block is visible.
             self.root.after(50, lambda: self.input_text_box.see(end_index))
         except Exception as e:
             logging.error(f"Error in update_highlight_position: {e}")
 
-    def jump_via_slider(self):
-        """
-        When the slider is released, update the reading index based on the slider's current value,
-        scroll the text input widget to the new position, update the TTS text, and resume text reading from that segment.
-        """
+    def jump_via_listbox(self):
         if not self.text_segments:
             messagebox.showinfo("No Text", "No text has been loaded yet.")
             return
@@ -447,57 +615,71 @@ class TranslatorApp:
         if new_index < len(self.text_segments):
             self.text_segment_index = new_index
             self.text_reading_active = True
+            self.input_listbox.selection_clear(0, tk.END)
+            self.input_listbox.selection_set(new_index)
+            self.input_listbox.see(new_index)
             self.add_message_to_queue(f"Jumping to segment {new_index + 1}.\n")
             logging.info(f"Jumping to segment {new_index + 1}.")
-            cumulative_chars = sum(len(s) for s in self.text_segments[:new_index])
-            self.input_text_box.see("1.0+" + str(cumulative_chars) + " chars")
-            # Update current TTS text so that any ongoing speech will be cancelled.
             self.current_tts_text = ""
             self.process_next_text_segment()
 
-    def read_from_file(self, input_text_box):
-        file_path = filedialog.askopenfilename(
-            title="Select a file",
-            filetypes=[("Text files", "*.txt"), ("EPUB files", "*.epub")]
-        )
-        if not file_path:
+    def jump_via_textbox(self):
+        if not self.text_segments:
+            messagebox.showinfo("No Text", "No text has been loaded yet.")
             return
-        try:
-            if file_path.lower().endswith(".epub"):
-                full_text = epub_to_text(file_path)
-                logging.info(f"Extracted {len(full_text)} characters from EPUB file.")
-            else:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    full_text = f.read()
-            input_text_box.delete("1.0", tk.END)
-            input_text_box.insert(tk.END, full_text)
-        except Exception as e:
-            messagebox.showerror("File Read Error", f"Error reading file: {e}")
+        new_index = int(self.jump_slider.get()) - 1
+        if new_index < len(self.text_segments):
+            self.text_segment_index = new_index
+            self.text_reading_active = True
+            self.input_text_box.tag_remove("current", "1.0", tk.END)
+            cumulative_chars = sum(len(s) for s in self.text_segments[:new_index])
+            start_index = "1.0+" + str(cumulative_chars) + " chars"
+            end_index = "1.0+" + str(cumulative_chars + len(self.text_segments[new_index])) + " chars"
+            self.input_text_box.tag_add("current", start_index, end_index)
+            self.input_text_box.tag_config("current", background="yellow")
+            self.input_text_box.see(start_index)
+            self.add_message_to_queue(f"Jumping to segment {new_index + 1}.\n")
+            logging.info(f"Jumping to segment {new_index + 1}.")
+            self.current_tts_text = ""
+            self.process_next_text_segment()
 
-    def submit_text_input(self, input_text_box):
-        text = input_text_box.get("1.0", tk.END).strip()
+    def submit_text_input(self, input_widget):
+        text = input_widget.get("1.0", tk.END).strip()
         if not text:
-            messagebox.showwarning("No Text", "Please paste some text before submitting.")
+            messagebox.showwarning("No Text", "Please enter some text before submitting.")
             return
-        # Set the TTS source to text so that TTS is handled via the text queue.
+        self.tts_input_source = "text"
+        self.handle_text_input(text)
+
+    def submit_listbox_input(self):
+        items = self.input_listbox.get(0, tk.END)
+        text = "\n".join(items)
+        if not text.strip():
+            messagebox.showwarning("No Text", "Please enter some text before submitting.")
+            return
         self.tts_input_source = "text"
         self.handle_text_input(text)
 
     def handle_text_input(self, text):
         self.add_message_to_queue(f"Text Input ({self.spoken_language_var.get()}): {text}\n")
-        # Clear the translated text box for the new run.
         self.translated_text_box.delete("1.0", tk.END)
-        # Optionally, clear the translation cache if you want new translations every run.
         with self.cache_lock:
             self.translation_cache.clear()
-        # Split text into segments by sentences.
         self.text_segments = re.split(r'(?<=[.!?])\s+', text)
         self.text_segment_index = 0
         self.text_reading_active = True
-        if hasattr(self, 'jump_slider'):
+
+        # Update slider range regardless of input method (listbox or textbox)
+        if self.jump_slider:
             self.jump_slider.config(from_=1, to=len(self.text_segments))
             self.jump_slider.set(1)
-        # Set the current TTS text to empty so any old speech is cancelled.
+
+        # If using listbox input, update its contents
+        if self.input_listbox is not None:
+            self.input_listbox.delete(0, tk.END)
+            for segment in self.text_segments:
+                self.input_listbox.insert(tk.END, segment)
+
         self.current_tts_text = ""
         self.process_next_text_segment()
 
@@ -508,34 +690,30 @@ class TranslatorApp:
             return
         segment = self.text_segments[self.text_segment_index].strip().replace("\n", " ")
         self.text_segment_index += 1
-        # Check if jump_slider exists before updating it.
-        if hasattr(self, 'jump_slider') and self.jump_slider.winfo_exists():
-            try:
-                self.jump_slider.set(self.text_segment_index)
-            except Exception as e:
-                logging.error(f"Error updating jump_slider: {e}")
-        # Auto scroll and highlight current segment.
-        if self.input_text_box:
+        if self.input_listbox is not None:
+            self.input_listbox.selection_clear(0, tk.END)
+            self.input_listbox.selection_set(self.text_segment_index - 1)
+            self.input_listbox.see(self.text_segment_index - 1)
+        elif self.input_text_box is not None:
             cumulative_chars = sum(len(s) for s in self.text_segments[:self.text_segment_index - 1])
-            self.input_text_box.see("1.0+" + str(cumulative_chars) + " chars")
-            self.input_text_box.tag_remove("current", "1.0", tk.END)
             start_index = "1.0+" + str(cumulative_chars) + " chars"
             end_index = "1.0+" + str(cumulative_chars + len(self.text_segments[self.text_segment_index - 1])) + " chars"
+            self.input_text_box.tag_remove("current", "1.0", tk.END)
             self.input_text_box.tag_add("current", start_index, end_index)
             self.input_text_box.tag_config("current", background="yellow")
             self.input_text_box.see(start_index)
         if not segment:
             self.root.after(10, self.process_next_text_segment)
             return
-        if self.map_language_for_translation(self.current_target_language) != self.map_language_for_translation(self.current_spoken_language):
+        if self.map_language_for_translation(self.current_target_language) != self.map_language_for_translation(
+                self.current_spoken_language):
             translated_segment = self.translate_text(segment, self.current_target_language)
         else:
             translated_segment = segment
         self.add_translation_to_queue(f"{translated_segment}\n")
-        # For text input, the TTS source is "text" and will be handled in the text queue.
         self.current_tts_text = translated_segment
         word_count = len(segment.split())
-        delay = max(1000, int(word_count * 300))
+        delay = max(1000, int(word_count * 500))
         self.root.after(delay, self.process_next_text_segment)
 
     def pause_text_reading(self):
@@ -594,11 +772,8 @@ class TranslatorApp:
         except Exception:
             return locale_code
 
-    # New function to highlight the current output sentence in the translation box
     def highlight_current_output_sentence(self, sentence):
-        # Remove any previous highlight
         self.translated_text_box.tag_remove("current_output", "1.0", tk.END)
-        # Find the index of the current sentence (assumes it was just inserted)
         index = self.translated_text_box.search(sentence, "1.0", tk.END)
         if index:
             end_index = f"{index}+{len(sentence)}c"
@@ -660,25 +835,49 @@ class TranslatorApp:
         voice_frame.grid(row=0, column=0, padx=(0, 20), pady=5, sticky="w")
         voice_label = tk.Label(voice_frame, text="Select Voice:", bg="#f4f4f4",
                                fg="black", font=self.label_font)
-        voice_label.pack(side="left", padx=(0, 10))
+        voice_label.pack(side=tk.LEFT, padx=(0, 10))
         self.voice_combobox = ttk.Combobox(voice_frame, textvariable=self.voice_var,
                                            values=["Loading voices..."],
                                            state="disabled", font=self.dropdown_font,
                                            width=50)
-        self.voice_combobox.pack(side="left")
+        self.voice_combobox.pack(side=tk.LEFT)
         font_size_frame = tk.Frame(translation_window, bg="#f4f4f4")
         font_size_frame.grid(row=3, column=0, sticky="ew", padx=int(10 * self.scale_factor),
                              pady=(5, 10))
         font_size_label = tk.Label(font_size_frame, text="Translated Text Font Size:",
                                    bg="#f4f4f4", fg="black", font=self.label_font)
-        font_size_label.pack(side="left", padx=(0, 10))
+        font_size_label.pack(side=tk.LEFT, padx=(0, 10))
         font_size_slider = tk.Scale(font_size_frame, from_=10, to=40, orient="horizontal",
                                     length=int(200 * self.scale_factor),
                                     variable=self.font_size_var,
                                     command=self.set_translation_font_size,
                                     font=self.dropdown_font)
         font_size_slider.set(20)
-        font_size_slider.pack(side="left", padx=(10, 0), pady=5)
+        font_size_slider.pack(side=tk.LEFT, padx=(10, 0), pady=5)
+        # New button to save the translation output.
+        save_output_button = tk.Button(translation_window, text="Save Output",
+                                       command=self.save_translation_output,
+                                       bg="#4CAF50", fg="white", font=self.main_button_font,
+                                       relief="raised", bd=4)
+        save_output_button.place(relx=0.95, rely=0.95, anchor="se")
+
+    def save_translation_output(self):
+        output_text = self.translated_text_box.get("1.0", tk.END).strip()
+        if not output_text:
+            messagebox.showwarning("No Text", "There is no text output to save.")
+            return
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt")],
+            title="Save Translation Output"
+        )
+        if file_path:
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(output_text)
+                messagebox.showinfo("Saved", f"Translation output saved to:\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Error saving translation output: {e}")
 
     def set_translation_font_size(self, size):
         try:
@@ -812,7 +1011,6 @@ class TranslatorApp:
 
     def insert_text_with_limit(self, text_widget, message, max_lines):
         text_widget.insert(tk.END, message)
-        # Force the view to the bottom every time new text is inserted.
         text_widget.yview_moveto(1.0)
         current_lines = int(text_widget.index('end-1c').split('.')[0])
         if current_lines > max_lines:
@@ -837,16 +1035,28 @@ class TranslatorApp:
                 self.insert_text_with_limit(self.translated_text_box, message, self.MAX_TRANSLATED_LINES)
                 new_text = message.strip()
                 if new_text:
-                    # Highlight the current sentence in the output translation box
                     self.highlight_current_output_sentence(new_text)
-                    if new_text != self.last_spoken_text:
-                        self.speak_text(new_text, origin=self.tts_input_source)
-                        self.last_spoken_text = new_text
+                    # For audio input, accumulate translated text to reduce pauses.
+                    if self.tts_input_source == "audio":
+                        self.audio_tts_buffer += new_text + " "
+                        if self.audio_tts_timer is not None:
+                            self.root.after_cancel(self.audio_tts_timer)
+                        self.audio_tts_timer = self.root.after(300, self.process_audio_tts_buffer)
+                    else:
+                        if new_text != self.last_spoken_text:
+                            self.speak_text(new_text, origin=self.tts_input_source)
+                            self.last_spoken_text = new_text
         except Exception as e:
             self.add_message_to_queue(f"Error updating translation box: {e}\n")
             logging.error(f"Error updating translation box: {e}")
         finally:
             self.root.after(100, self.update_translation_box)
+
+    def process_audio_tts_buffer(self):
+        if self.audio_tts_buffer.strip():
+            self.speak_text(self.audio_tts_buffer.strip(), origin="audio")
+            self.audio_tts_buffer = ""
+        self.audio_tts_timer = None
 
     def process_mic_level_queue(self):
         try:
@@ -864,7 +1074,6 @@ class TranslatorApp:
     def process_audio_buffer(self, spoken_language_code, target_language_code, audio_data):
         recognizer = sr.Recognizer()
         try:
-            # Set TTS source to audio for recognized speech.
             self.tts_input_source = "audio"
             logging.debug("Processing audio buffer...")
             combined_audio = np.concatenate(audio_data, axis=0)
@@ -877,13 +1086,15 @@ class TranslatorApp:
                 logging.debug(f"Recognized Text: {recognized_text}")
             else:
                 logging.debug("No meaningful text recognized.")
-            if self.map_language_for_translation(target_language_code) != self.map_language_for_translation(spoken_language_code):
+            if self.map_language_for_translation(target_language_code) != self.map_language_for_translation(
+                    spoken_language_code):
                 translated_text = self.translate_text(recognized_text, target_language_code)
                 if translated_text:
-                    self.add_translation_to_queue(f"{translated_text}\n")
+                    # For audio input only, append a space instead of a newline.
+                    self.add_translation_to_queue(f"{translated_text} ")
                     logging.debug(f"Translated Text: {translated_text}")
             else:
-                self.add_translation_to_queue(f"{recognized_text}\n")
+                self.add_translation_to_queue(f"{recognized_text} ")
                 logging.debug("Spoken and target languages are the same. No translation needed.")
         except sr.UnknownValueError:
             logging.error("Speech recognition could not understand audio.")
@@ -1095,7 +1306,6 @@ class TranslatorApp:
 
     async def async_speak_text(self, text, retry_count=3, origin="audio"):
         for attempt in range(1, retry_count + 1):
-            # Only for audio-originated requests, check cancellation.
             if origin == "audio" and self.current_tts_text != text:
                 logging.debug("TTS text changed. Cancelling current TTS.")
                 return
@@ -1106,7 +1316,8 @@ class TranslatorApp:
                 selected_voice_entry = self.voice_var.get()
                 selected_voice_name = (selected_voice_entry.split(" - ")[1]
                                        if " - " in selected_voice_entry else selected_voice_entry)
-                logging.debug(f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
+                logging.debug(
+                    f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
                 selected_voice = next((voice for voice in self.edge_tts_voices if
                                        self.strip_voice_prefix(voice['Name']) == selected_voice_name), None)
                 if not selected_voice:
@@ -1184,27 +1395,17 @@ class TranslatorApp:
                     logging.error(final_error)
 
     def speak_text(self, text, origin="audio"):
-        """
-        New speak_text method that accepts an origin parameter.
-        If origin is "audio", the text is enqueued and processed sequentially via the audio queue.
-        If origin is "text", the text is enqueued and processed sequentially via the text queue.
-        """
-        # Remove newlines to reduce pauses in TTS for speech-to-speech conversion.
         text = text.replace("\n", " ")
         if origin == "audio":
             self.audio_tts_queue.put(text)
             if not self.audio_tts_processing:
                 self.process_audio_tts_queue()
-        else:  # origin == "text"
+        else:
             self.text_tts_queue.put(text)
             if not self.text_tts_processing:
                 self.process_text_tts_queue()
 
     def process_audio_tts_queue(self):
-        """
-        Process the audio TTS queue sequentially so that each audio-initiated TTS request
-        is allowed to complete before the next begins.
-        """
         self.audio_tts_processing = True
 
         def worker():
@@ -1214,7 +1415,7 @@ class TranslatorApp:
                 coro = self.async_speak_text(audio_text, origin="audio")
                 future = asyncio.run_coroutine_threadsafe(coro, self.tts_loop)
                 try:
-                    future.result()  # Wait for this TTS to complete.
+                    future.result()
                 except Exception as e:
                     self.add_message_to_queue(f"Audio TTS error: {e}\n")
                     logging.error(f"Audio TTS error: {e}")
@@ -1223,20 +1424,15 @@ class TranslatorApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def process_text_tts_queue(self):
-        """
-        Process the text TTS queue sequentially so that each text-initiated TTS request
-        is allowed to complete fully.
-        """
         self.text_tts_processing = True
 
         def worker():
             while not self.text_tts_queue.empty():
                 text_to_speak = self.text_tts_queue.get()
-                # For text, we do not update self.current_tts_text so that cancellation check is skipped.
                 coro = self.async_speak_text(text_to_speak, origin="text")
                 future = asyncio.run_coroutine_threadsafe(coro, self.tts_loop)
                 try:
-                    future.result()  # Wait for this TTS to complete.
+                    future.result()
                 except Exception as e:
                     self.add_message_to_queue(f"Text TTS error: {e}\n")
                     logging.error(f"Text TTS error: {e}")
@@ -1306,14 +1502,16 @@ class TranslatorApp:
     def update_voice_combobox(self, voice_names):
         try:
             self.voice_combobox['values'] = voice_names
-            if voice_names:
-                self.voice_combobox.set(voice_names[0])
-                self.voice_combobox.config(state="readonly")
-                self.add_message_to_queue("Select a voice from the combobox.\n")
-                logging.info("Voice selection updated.")
-            else:
-                self.voice_combobox.set("No voices available")
-                self.voice_combobox.config(state="disabled")
+            target_index = 0
+            for idx, name in enumerate(voice_names):
+                if "sonianeural" in name.lower():
+                    target_index = idx
+                    break
+            self.voice_combobox.current(target_index)
+            logging.info(f"Default TTS voice set to index: {target_index} ({voice_names[target_index]})")
+            self.voice_combobox.config(state="readonly")
+            self.add_message_to_queue("Select a voice from the combobox.\n")
+            logging.info("Voice selection updated.")
         except Exception as e:
             self.add_message_to_queue(f"Error updating voice combobox: {e}\n")
             logging.error(f"Error updating voice combobox: {e}")
