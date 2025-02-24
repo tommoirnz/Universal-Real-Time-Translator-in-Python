@@ -28,7 +28,8 @@ a video of it working!
 Requirements file is requirements.txt
 use.  pip install -r requirements.txt
 
-Note latest update reads text files and epub files. I attach a couple of open source book extracts to test out the file read and experimentation. 
+Note latest update reads text files and epub files. I attach a couple of open source book extracts to test out the file read and experimentation. If you compile this with auto-py-to-exe you need the icon.ico file to add.
+Also when running the .exe if compiled you need the icon in the same directory or the minimize to tray will not work.
 
 Tom Moir
 tomspeechnz@gmail.com
