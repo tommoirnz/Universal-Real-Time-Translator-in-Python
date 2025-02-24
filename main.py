@@ -207,6 +207,15 @@ class TranslatorApp:
             self.add_message_to_queue(f"TTS event loop error: {e}\n")
             logging.error(f"TTS event loop error: {e}")
 
+    def stop_tts_loop(self):
+        """Stops the TTS asyncio event loop and waits for the thread to finish."""
+        try:
+            self.tts_loop.call_soon_threadsafe(self.tts_loop.stop)
+            self.tts_thread.join(timeout=5)
+            logging.info("TTS event loop stopped successfully.")
+        except Exception as e:
+            logging.error(f"Error stopping TTS loop: {e}")
+
     def configure_ffmpeg(self):
         try:
             import shutil
@@ -1079,7 +1088,7 @@ class TranslatorApp:
             if recognized_text.strip():
                 # Announce the language only if it hasn't been reported yet
                 if self.last_reported_language != current_language:
-                    self.add_message_to_queue(f"{current_language} detected. ")
+                    self.add_message_to_queue(f"{current_language} selected ")
                     self.last_reported_language = current_language
                 # Append recognized text side-by-side (with a space)
                 self.add_message_to_queue(f": {recognized_text} ")
@@ -1502,24 +1511,27 @@ class TranslatorApp:
             self.add_message_to_queue(f"Error updating voice combobox: {e}\n")
             logging.error(f"Error updating voice combobox: {e}")
 
-    def read_wav(self, filename):
-        fs, data = read(filename)
-        if data.dtype != np.float32:
-            max_val = np.max(np.abs(data))
-            if max_val == 0:
-                max_val = 1
-            data = data.astype(np.float32) / max_val
-        return fs, data
-
-    def stop_tts_loop(self):
-        try:
-            if hasattr(self, 'tts_loop') and self.tts_loop.is_running():
-                self.tts_loop.call_soon_threadsafe(self.tts_loop.stop)
-                self.tts_thread.join(timeout=1)
-                logging.info("TTS event loop stopped.")
-        except Exception as e:
-            self.add_message_to_queue(f"Error stopping TTS loop: {e}\n")
-            logging.error(f"Error stopping TTS loop: {e}")
+    # NEW: When target language is updated, try to set the TTS voice combobox to the first matching voice.
+    def update_tts_voice_selection(self):
+        if not hasattr(self, 'edge_tts_voices') or not self.edge_tts_voices:
+            self.add_message_to_queue("TTS voices not loaded, cannot update TTS voice for target language.\n")
+            return
+        target_code = self.current_target_language.split('-')[0].lower()
+        # Map Hebrew's legacy code "iw" to "he" to match TTS voice locales.
+        if target_code == "iw":
+            target_code = "he"
+        filtered = [voice for voice in self.edge_tts_voices
+                    if voice.get("Locale", "").split('-')[0].lower() == target_code]
+        if filtered:
+            first_voice = filtered[0]
+            stripped_name = self.strip_voice_prefix(first_voice['Name'])
+            country_name = self.get_country_name_from_locale(first_voice['Locale'])
+            display_name = f"{country_name} - {stripped_name}" if country_name else stripped_name
+            self.voice_combobox.set(display_name)
+            logging.info(f"TTS voice updated to: {display_name} for target language {self.target_language_var.get()}")
+        else:
+            self.add_message_to_queue("No TTS voice available for target language.\n")
+            logging.error("No TTS voice available for target language.")
 
     def update_spoken_language(self, *args):
         try:
@@ -1533,6 +1545,8 @@ class TranslatorApp:
         try:
             self.current_target_language = self.languages.get(self.target_language_var.get(), "en")
             logging.debug(f"Target language updated to: {self.current_target_language}")
+            # NEW: Update the TTS voice selection based on target language
+            self.update_tts_voice_selection()
         except Exception as e:
             self.add_message_to_queue(f"Error updating target language: {e}\n")
             logging.error(f"Error updating target language: {e}")
