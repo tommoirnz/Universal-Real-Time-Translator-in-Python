@@ -2,8 +2,9 @@ import os
 import subprocess
 import re  # For sentence splitting
 import warnings
-
-# This is the most fully functional version to date with text box and listbox input from file
+# Stable version. Lots of additions. 24/02/2025
+#Tom Moir and ChatGPT 03Mini and High
+#Free to use. Just acknowledge the source please.
 # Optionally, filter out EbookLib warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="ebooklib.epub")
 warnings.filterwarnings("ignore", category=FutureWarning, module="ebooklib.epub")
@@ -20,7 +21,7 @@ import queue  # Queue for communication between threads
 from scipy.io.wavfile import write, read  # Save and read audio data to/from a file
 from pystray import Icon, Menu, MenuItem  # For system tray functionality
 from PIL import Image, ImageDraw  # For image handling for the system tray icon
-import asyncio  # For asynchronous operations with edge-tts
+import asyncio  # For asynchronous operations with edge_tts
 
 # For reading EPUB files:
 from ebooklib import epub
@@ -31,16 +32,14 @@ if os.name == "nt":
     CREATE_NO_WINDOW = 0x08000000
     original_popen = subprocess.Popen
 
-
     def no_window_popen(*args, **kwargs):
         if os.name == "nt":
             kwargs.setdefault("creationflags", CREATE_NO_WINDOW)
         return original_popen(*args, **kwargs)
 
-
     subprocess.Popen = no_window_popen
 
-import edge_tts  # Text-to-Speech library using Microsoft Edge
+import edge_tts  # Microsoft Edge TTS
 from pydub import AudioSegment  # For audio format conversion
 import sys
 from collections import OrderedDict  # For implementing an LRU cache
@@ -49,8 +48,6 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 import pycountry
 
-# Finalised 23/02/2025 Auckland New Zealand
-# Tom Moir and ChatGPT o1 mini and o3 mini (mostly)
 # Configure logging to write debug and error messages to a file in the user's home directory.
 log_file = os.path.join(os.path.expanduser("~"), "translator_app_debug.log")
 logging.basicConfig(
@@ -64,7 +61,7 @@ logging.basicConfig(
 def epub_to_text(epub_path):
     """
     Extracts and returns plain text from an EPUB file.
-    It iterates over all items that are instances of epub.EpubHtml and concatenates their text.
+    Iterates over all items that are instances of epub.EpubHtml and concatenates their text.
     """
     try:
         book = epub.read_epub(epub_path)
@@ -85,8 +82,7 @@ class TranslatorApp:
     def __init__(self, root):
         """
         Initialize the TranslatorApp:
-          - Setup GUI components, including dynamic resizing.
-          - Configure audio capture, TTS, and translation caching.
+          - Setup GUI components, dynamic resizing, audio capture, TTS, and translation caching.
           - Initialize text reading control attributes.
         """
         self.root = root
@@ -103,17 +99,10 @@ class TranslatorApp:
         self.MAX_RECOGNIZED_LINES = 100
         self.MAX_TRANSLATED_LINES = 100
 
-        self.tts_enabled = tk.BooleanVar()
-        self.tts_enabled.set(False)
-        self.voice_var = tk.StringVar()
-        self.voice_var.set("Loading voices...")
-
-        self.font_size_var = tk.IntVar()
-        self.font_size_var.set(20)
-
-        self.tts_output_device_var = tk.StringVar()
-        self.tts_output_device_var.set("Default")
-
+        self.tts_enabled = tk.BooleanVar(value=False)
+        self.voice_var = tk.StringVar(value="Loading voices...")
+        self.font_size_var = tk.IntVar(value=20)
+        self.tts_output_device_var = tk.StringVar(value="Default")
         self.mic_level_queue = queue.Queue()
 
         self.translation_cache = OrderedDict()
@@ -121,33 +110,31 @@ class TranslatorApp:
         self.cache_size = 1000
 
         # Text reading control attributes
-        self.text_segments = []  # List of segments (sentences)
-        self.text_segment_index = 0  # Current segment index
+        self.text_segments = []
+        self.text_segment_index = 0
         self.text_reading_active = True
         self.last_spoken_text = ""
-        # For file-based input, we use a Listbox; for manual entry, a Text widget.
         self.input_listbox = None
         self.input_text_box = None
 
-        # New attribute to keep track of which text should be spoken.
         self.current_tts_text = ""
 
-        # New TTS queues and processing flags for audio and text inputs.
+        # TTS processing flags and queues
         self.audio_tts_queue = queue.Queue()
         self.audio_tts_processing = False
         self.text_tts_queue = queue.Queue()
         self.text_tts_processing = False
+        self.tts_input_source = "audio"  # "audio" for mic input, "text" for manual text
 
-        # This flag distinguishes the source of TTS (audio or text).
-        self.tts_input_source = "audio"  # default; will be set to "text" for manual text entry
-
-        # For audio input accumulation of translated text (to reduce pauses)
         self.audio_tts_buffer = ""
         self.audio_tts_timer = None
 
-        # New variables for translation speed in each input window.
-        self.listbox_speed_var = tk.IntVar(value=5)  # For file (Listbox) input window
-        self.textbox_speed_var = tk.IntVar(value=5)  # For manual (Text) input window
+        # Translation speed variables (for file and manual input)
+        self.listbox_speed_var = tk.IntVar(value=5)
+        self.textbox_speed_var = tk.IntVar(value=5)
+
+        # NEW: TTS speech rate slider (percentage); 100 = normal speed.
+        self.tts_rate_var = tk.DoubleVar(value=100)
 
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
@@ -171,8 +158,7 @@ class TranslatorApp:
         self.current_spoken_language = self.languages.get("English (US)", "en")
         self.current_target_language = self.languages.get("English (US)", "en")
 
-        self.buffer_size_var = tk.IntVar()
-        self.buffer_size_var.set(40)
+        self.buffer_size_var = tk.IntVar(value=40)
         self.buffer_size = self.buffer_size_var.get()
 
         self.configure_ffmpeg()
@@ -312,7 +298,6 @@ class TranslatorApp:
                                  command=self.flush_buffers, bg="silver", fg="black",
                                  font=self.main_button_font, relief="raised", bd=4)
         flush_button.pack(side=tk.LEFT, padx=5)
-        # Two separate buttons for text input:
         read_file_button = tk.Button(button_frame, text="Read File",
                                      command=self.open_listbox_input_window, bg="silver", fg="black",
                                      font=self.main_button_font, relief="raised", bd=4)
@@ -344,7 +329,6 @@ class TranslatorApp:
                                               bd=3, relief="sunken")
         self.output_window_text_box.pack(side=tk.LEFT, padx=int(7.5 * self.scale_factor),
                                          pady=int(7.5 * self.scale_factor))
-        # Bottom button frame for Save Transcript, Halt and Clean Exit, and Minimize to Tray.
         bottom_button_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         bottom_button_frame.pack(pady=int(7.5 * self.scale_factor))
         save_button = tk.Button(bottom_button_frame, text="Save Transcript",
@@ -360,29 +344,18 @@ class TranslatorApp:
                                     font=self.main_button_font, relief="raised", bd=4)
         minimize_button.pack(side=tk.LEFT, padx=5)
 
-        # Create the separate translation window.
         self.create_translation_window()
 
     def open_listbox_input_window(self):
-        """
-        Open a window for file-based text input.
-        This window uses a Listbox to display text line-by-line.
-        It includes a scrollbar, master and vernier sliders for selection,
-        a "Load File" button, and a Close button.
-        """
-        # Clear any existing input widget reference
+        # (Omitted for brevity – same as previous version)
         self.input_listbox = None
         self.input_text_box = None
-
         text_window = tk.Toplevel(self.root)
         text_window.title("Read File (Listbox)")
         text_window.geometry(f"{int(600 * self.scale_factor)}x{int(400 * self.scale_factor)}")
         text_window.configure(bg="#f4f4f4")
-
         main_frame = tk.Frame(text_window, bg="#f4f4f4")
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # Listbox with scrollbar.
         listbox_frame = tk.Frame(main_frame, bg="#f4f4f4")
         listbox_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         list_scrollbar = tk.Scrollbar(listbox_frame)
@@ -390,14 +363,10 @@ class TranslatorApp:
         self.input_listbox = tk.Listbox(listbox_frame, font=self.text_font, yscrollcommand=list_scrollbar.set)
         self.input_listbox.pack(fill=tk.BOTH, expand=True)
         list_scrollbar.config(command=self.input_listbox.yview)
-
-        # NEW: Horizontal slider for translation speed beneath the Listbox.
         speed_slider = tk.Scale(listbox_frame, from_=1, to=10, orient="horizontal",
                                 variable=self.listbox_speed_var, label="Translation Speed",
                                 font=self.text_font)
         speed_slider.pack(fill=tk.X, padx=5, pady=5)
-
-        # Slider frame for master and vernier sliders.
         slider_frame = tk.Frame(main_frame, bg="#f4f4f4")
         slider_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
         self.jump_slider = tk.Scale(slider_frame, from_=1, to=1, orient="vertical", bg="#f4f4f4",
@@ -412,8 +381,6 @@ class TranslatorApp:
         self.vernier_slider.bind("<ButtonPress-1>", self.vernier_press)
         self.vernier_slider.bind("<B1-Motion>", self.vernier_motion)
         self.vernier_slider.bind("<ButtonRelease-1>", self.vernier_release)
-
-        # Button panel.
         button_frame = tk.Frame(text_window, bg="#f4f4f4")
         button_frame.pack(pady=10, anchor="w")
         small_button_font = tkfont.Font(family=self.main_button_font.actual("family"),
@@ -443,8 +410,6 @@ class TranslatorApp:
                                  bg="silver", fg="black", font=small_button_font,
                                  relief="raised", bd=4)
         close_button.pack(side=tk.LEFT, padx=5)
-
-        # If the listbox already has items, update slider range.
         if self.input_listbox.size() > 0:
             self.text_segments = self.input_listbox.get(0, tk.END)
             self.jump_slider.config(from_=1, to=len(self.text_segments))
@@ -475,24 +440,14 @@ class TranslatorApp:
             messagebox.showerror("File Read Error", f"Error reading file: {e}")
 
     def open_textbox_input_window(self):
-        """
-        Open a window for manual text entry.
-        This window uses a Text widget for free-form entry and includes a scrollbar,
-        master and vernier sliders for navigation, and Submit/Close buttons.
-        """
-        # Clear any file input reference
         self.input_text_box = None
         self.input_listbox = None
-
         text_window = tk.Toplevel(self.root)
         text_window.title("Enter Text")
         text_window.geometry(f"{int(600 * self.scale_factor)}x{int(400 * self.scale_factor)}")
         text_window.configure(bg="#f4f4f4")
-
         main_frame = tk.Frame(text_window, bg="#f4f4f4")
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # Text widget with scrollbar.
         text_frame = tk.Frame(main_frame, bg="#f4f4f4")
         text_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar = tk.Scrollbar(text_frame)
@@ -502,18 +457,10 @@ class TranslatorApp:
                                       yscrollcommand=scrollbar.set)
         self.input_text_box.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.input_text_box.yview)
-
-        # NEW: Horizontal slider for translation speed beneath the Text widget.
         speed_slider = tk.Scale(text_frame, from_=1, to=10, orient="horizontal",
                                 variable=self.textbox_speed_var, label="Translation Speed",
                                 font=self.text_font)
         speed_slider.pack(fill=tk.X, padx=5, pady=5)
-
-        # For textbox mode, we will still create a list of segments for navigation.
-        # Initially, text_segments is empty.
-        self.text_segments = []
-
-        # Slider frame for master and vernier sliders.
         slider_frame = tk.Frame(main_frame, bg="#f4f4f4")
         slider_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
         self.jump_slider = tk.Scale(slider_frame, from_=1, to=1, orient="vertical", bg="#f4f4f4",
@@ -528,8 +475,6 @@ class TranslatorApp:
         self.vernier_slider.bind("<ButtonPress-1>", self.vernier_press)
         self.vernier_slider.bind("<B1-Motion>", self.vernier_motion)
         self.vernier_slider.bind("<ButtonRelease-1>", self.vernier_release_textbox)
-
-        # Button panel.
         button_frame = tk.Frame(text_window, bg="#f4f4f4")
         button_frame.pack(pady=10, anchor="w")
         small_button_font = tkfont.Font(family=self.main_button_font.actual("family"),
@@ -583,7 +528,6 @@ class TranslatorApp:
             logging.error(f"Error during vernier motion: {e}")
 
     def vernier_release(self, event):
-        # For listbox window
         try:
             offset = int(self.vernier_slider.get())
             current = int(self.jump_slider.get())
@@ -597,7 +541,6 @@ class TranslatorApp:
             self.resume_text_reading()
 
     def vernier_release_textbox(self, event):
-        # For textbox window
         try:
             offset = int(self.vernier_slider.get())
             current = int(self.jump_slider.get())
@@ -689,18 +632,13 @@ class TranslatorApp:
         self.text_segments = re.split(r'(?<=[.!?])\s+', text)
         self.text_segment_index = 0
         self.text_reading_active = True
-
-        # Update slider range regardless of input method (listbox or textbox)
         if self.jump_slider:
             self.jump_slider.config(from_=1, to=len(self.text_segments))
             self.jump_slider.set(1)
-
-        # If using listbox input, update its contents
         if self.input_listbox is not None:
             self.input_listbox.delete(0, tk.END)
             for segment in self.text_segments:
                 self.input_listbox.insert(tk.END, segment)
-
         self.current_tts_text = ""
         self.process_next_text_segment()
 
@@ -726,25 +664,21 @@ class TranslatorApp:
         if not segment:
             self.root.after(10, self.process_next_text_segment)
             return
-        if self.map_language_for_translation(self.current_target_language) != self.map_language_for_translation(
-                self.current_spoken_language):
+        if self.map_language_for_translation(self.current_target_language) != self.map_language_for_translation(self.current_spoken_language):
             translated_segment = self.translate_text(segment, self.current_target_language)
         else:
             translated_segment = segment
         self.add_translation_to_queue(f"{translated_segment}\n")
         self.current_tts_text = translated_segment
         word_count = len(segment.split())
-        # Calculate the base delay (in ms) for this segment.
         base_delay = max(1000, int(word_count * 500))
-        # Determine the slider value from the appropriate window:
         if self.input_listbox is not None:
             slider_value = self.listbox_speed_var.get()
         elif self.input_text_box is not None:
             slider_value = self.textbox_speed_var.get()
         else:
-            slider_value = 5  # default if no input widget is active
-        # Use a multiplier that makes the delay longer when slider is low (slow) and shorter when high (fast).
-        multiplier = (11 - slider_value) / 5  # slider 1 -> multiplier 2.0, slider 10 -> multiplier 0.2
+            slider_value = 5
+        multiplier = (11 - slider_value) / 5
         delay = int(base_delay * multiplier)
         self.root.after(delay, self.process_next_text_segment)
 
@@ -886,7 +820,17 @@ class TranslatorApp:
                                     font=self.dropdown_font)
         font_size_slider.set(20)
         font_size_slider.pack(side=tk.LEFT, padx=(10, 0), pady=5)
-        # New button to save the translation output.
+        # NEW: TTS Speech Rate slider (percentage; 100 = normal speed)
+        tts_rate_frame = tk.Frame(translation_window, bg="#f4f4f4")
+        tts_rate_frame.grid(row=4, column=0, sticky="ew", padx=int(10 * self.scale_factor),
+                            pady=(5, 10))
+        tts_rate_label = tk.Label(tts_rate_frame, text="TTS Speech Rate (%):", bg="#f4f4f4",
+                                  fg="black", font=self.label_font)
+        tts_rate_label.pack(side=tk.LEFT, padx=(0, 10))
+        tts_rate_slider = tk.Scale(tts_rate_frame, from_=50, to=150, orient="horizontal",
+                                   variable=self.tts_rate_var, resolution=1, font=self.dropdown_font)
+        tts_rate_slider.set(100)
+        tts_rate_slider.pack(side=tk.LEFT, padx=(10, 0), pady=5)
         save_output_button = tk.Button(translation_window, text="Save Output",
                                        command=self.save_translation_output,
                                        bg="silver", fg="black", font=self.main_button_font,
@@ -982,7 +926,6 @@ class TranslatorApp:
 
     def minimize_to_tray(self):
         try:
-            # Load the custom icon from "icon.ico"
             icon_image = Image.open("icon.ico")
             icon_image = icon_image.resize((64, 64))
             menu = Menu(MenuItem('Restore', self.restore_from_tray), MenuItem('Exit', self.halt_and_exit))
@@ -1062,7 +1005,6 @@ class TranslatorApp:
                 new_text = message.strip()
                 if new_text:
                     self.highlight_current_output_sentence(new_text)
-                    # For audio input, accumulate translated text to reduce pauses.
                     if self.tts_input_source == "audio":
                         self.audio_tts_buffer += new_text + " "
                         if self.audio_tts_timer is not None:
@@ -1112,11 +1054,9 @@ class TranslatorApp:
                 logging.debug(f"Recognized Text: {recognized_text}")
             else:
                 logging.debug("No meaningful text recognized.")
-            if self.map_language_for_translation(target_language_code) != self.map_language_for_translation(
-                    spoken_language_code):
+            if self.map_language_for_translation(target_language_code) != self.map_language_for_translation(spoken_language_code):
                 translated_text = self.translate_text(recognized_text, target_language_code)
                 if translated_text:
-                    # For audio input only, append a space instead of a newline.
                     self.add_translation_to_queue(f"{translated_text} ")
                     logging.debug(f"Translated Text: {translated_text}")
             else:
@@ -1294,7 +1234,6 @@ class TranslatorApp:
             logging.error("Invalid gain value entered.")
 
     def map_language_for_translation(self, lang_code):
-        # Ensure that Hebrew is mapped to 'iw'
         if lang_code in ["he", "iw"]:
             return "iw"
         mapping = {
@@ -1334,6 +1273,7 @@ class TranslatorApp:
             logging.error(f"Error toggling TTS: {e}")
 
     async def async_speak_text(self, text, retry_count=3, origin="audio"):
+        # Generate TTS using plain text and pass a rate parameter if not at default.
         for attempt in range(1, retry_count + 1):
             if origin == "audio" and self.current_tts_text != text:
                 logging.debug("TTS text changed. Cancelling current TTS.")
@@ -1345,10 +1285,9 @@ class TranslatorApp:
                 selected_voice_entry = self.voice_var.get()
                 selected_voice_name = (selected_voice_entry.split(" - ")[1]
                                        if " - " in selected_voice_entry else selected_voice_entry)
-                logging.debug(
-                    f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
-                selected_voice = next((voice for voice in self.edge_tts_voices if
-                                       self.strip_voice_prefix(voice['Name']) == selected_voice_name), None)
+                logging.debug(f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
+                selected_voice = next((voice for voice in self.edge_tts_voices
+                                       if self.strip_voice_prefix(voice['Name']) == selected_voice_name), None)
                 if not selected_voice:
                     error_message = f"Selected voice '{selected_voice_name}' not found."
                     self.add_message_to_queue(error_message + "\n")
@@ -1356,9 +1295,20 @@ class TranslatorApp:
                     return
                 voice = selected_voice['ShortName']
                 logging.debug(f"Using voice: {voice}")
-                communicate = edge_tts.Communicate(text, voice=voice)
+                slider_value = self.tts_rate_var.get()  # 100 means normal speed.
+                # If slider is exactly 100, do not pass a rate parameter.
+                if slider_value == 100:
+                    logging.debug("Using default speed (no rate parameter).")
+                    communicator = edge_tts.Communicate(text, voice=voice)
+                else:
+                    if slider_value > 100:
+                        rate_str = f"+{int(slider_value - 100)}%"
+                    else:
+                        rate_str = f"-{int(100 - slider_value)}%"
+                    logging.debug(f"Using rate string: {rate_str}")
+                    communicator = edge_tts.Communicate(text, voice=voice, rate=rate_str)
                 mp3_buffer = io.BytesIO()
-                async for chunk in communicate.stream():
+                async for chunk in communicator.stream():
                     if origin == "audio" and self.current_tts_text != text:
                         logging.debug("TTS text changed during streaming. Cancelling current TTS.")
                         return
@@ -1371,9 +1321,9 @@ class TranslatorApp:
                     raise ValueError("No audio data received.")
                 mp3_buffer.seek(0)
                 try:
-                    audio = AudioSegment.from_file(mp3_buffer, format="mp3")
+                    audio_segment = AudioSegment.from_file(mp3_buffer, format="mp3")
                     wav_buffer = io.BytesIO()
-                    audio.export(wav_buffer, format="wav")
+                    audio_segment.export(wav_buffer, format="wav")
                     wav_buffer.seek(0)
                     logging.debug("MP3 to WAV conversion successful.")
                 except Exception as e:
