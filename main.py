@@ -2,6 +2,7 @@ import os
 import subprocess
 import re  # For sentence splitting
 import warnings
+
 # This is the most fully functional version to date with text box and listbox input from file
 # Optionally, filter out EbookLib warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="ebooklib.epub")
@@ -30,10 +31,12 @@ if os.name == "nt":
     CREATE_NO_WINDOW = 0x08000000
     original_popen = subprocess.Popen
 
+
     def no_window_popen(*args, **kwargs):
         if os.name == "nt":
             kwargs.setdefault("creationflags", CREATE_NO_WINDOW)
         return original_popen(*args, **kwargs)
+
 
     subprocess.Popen = no_window_popen
 
@@ -45,8 +48,9 @@ import io
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import pycountry
-#Finalised 23/02/2025 Auckland New Zealand
-#Tom Moir and ChatGPT o1 mini and o3 mini (mostly)
+
+# Finalised 23/02/2025 Auckland New Zealand
+# Tom Moir and ChatGPT o1 mini and o3 mini (mostly)
 # Configure logging to write debug and error messages to a file in the user's home directory.
 log_file = os.path.join(os.path.expanduser("~"), "translator_app_debug.log")
 logging.basicConfig(
@@ -140,6 +144,10 @@ class TranslatorApp:
         # For audio input accumulation of translated text (to reduce pauses)
         self.audio_tts_buffer = ""
         self.audio_tts_timer = None
+
+        # New variables for translation speed in each input window.
+        self.listbox_speed_var = tk.IntVar(value=5)  # For file (Listbox) input window
+        self.textbox_speed_var = tk.IntVar(value=5)  # For manual (Text) input window
 
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
@@ -383,6 +391,12 @@ class TranslatorApp:
         self.input_listbox.pack(fill=tk.BOTH, expand=True)
         list_scrollbar.config(command=self.input_listbox.yview)
 
+        # NEW: Horizontal slider for translation speed beneath the Listbox.
+        speed_slider = tk.Scale(listbox_frame, from_=1, to=10, orient="horizontal",
+                                variable=self.listbox_speed_var, label="Translation Speed",
+                                font=self.text_font)
+        speed_slider.pack(fill=tk.X, padx=5, pady=5)
+
         # Slider frame for master and vernier sliders.
         slider_frame = tk.Frame(main_frame, bg="#f4f4f4")
         slider_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
@@ -488,6 +502,12 @@ class TranslatorApp:
                                       yscrollcommand=scrollbar.set)
         self.input_text_box.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.input_text_box.yview)
+
+        # NEW: Horizontal slider for translation speed beneath the Text widget.
+        speed_slider = tk.Scale(text_frame, from_=1, to=10, orient="horizontal",
+                                variable=self.textbox_speed_var, label="Translation Speed",
+                                font=self.text_font)
+        speed_slider.pack(fill=tk.X, padx=5, pady=5)
 
         # For textbox mode, we will still create a list of segments for navigation.
         # Initially, text_segments is empty.
@@ -714,8 +734,18 @@ class TranslatorApp:
         self.add_translation_to_queue(f"{translated_segment}\n")
         self.current_tts_text = translated_segment
         word_count = len(segment.split())
-        # The delay is calculated here: a minimum of 1000 ms and a multiplier of 500 ms per word.
-        delay = max(1000, int(word_count * 500))
+        # Calculate the base delay (in ms) for this segment.
+        base_delay = max(1000, int(word_count * 500))
+        # Determine the slider value from the appropriate window:
+        if self.input_listbox is not None:
+            slider_value = self.listbox_speed_var.get()
+        elif self.input_text_box is not None:
+            slider_value = self.textbox_speed_var.get()
+        else:
+            slider_value = 5  # default if no input widget is active
+        # Use a multiplier that makes the delay longer when slider is low (slow) and shorter when high (fast).
+        multiplier = (11 - slider_value) / 5  # slider 1 -> multiplier 2.0, slider 10 -> multiplier 0.2
+        delay = int(base_delay * multiplier)
         self.root.after(delay, self.process_next_text_segment)
 
     def pause_text_reading(self):
