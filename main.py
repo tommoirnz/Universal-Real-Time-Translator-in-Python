@@ -183,6 +183,9 @@ class TranslatorApp:
         self.target_language_var.trace_add('write', self.update_target_language)
         self.root.bind("<Configure>", self.on_resize)
 
+        # NEW: Track the last reported spoken language for audio detection messaging
+        self.last_reported_language = None
+
     def on_resize(self, event):
         if event.widget == self.root:
             new_scale = min(event.width / self.design_width, event.height / self.design_height)
@@ -709,6 +712,29 @@ class TranslatorApp:
             self.add_message_to_queue(f"Error flushing buffers: {e}\n")
             logging.error(f"Error flushing buffers: {e}")
 
+    # NEW: Translation method using GoogleTranslator with caching
+    def translate_text(self, text, target_language):
+        cache_key = (text.lower(), target_language)
+        with self.cache_lock:
+            if cache_key in self.translation_cache:
+                self.translation_cache.move_to_end(cache_key)
+                return self.translation_cache[cache_key]
+        try:
+            target_language_mapped = self.map_language_for_translation(target_language)
+            source_language_mapped = self.map_language_for_translation(self.current_spoken_language)
+            translator = GoogleTranslator(source=source_language_mapped, target=target_language_mapped)
+            translated = translator.translate(text)
+            with self.cache_lock:
+                self.translation_cache[cache_key] = translated
+                if len(self.translation_cache) > self.cache_size:
+                    oldest = next(iter(self.translation_cache))
+                    del self.translation_cache[oldest]
+            return translated
+        except Exception as e:
+            self.add_translation_to_queue(f"Translation failed: {e}\n")
+            logging.error(f"Translation failed: {e}")
+            return None
+
     def get_country_name_from_locale(self, locale_code):
         if locale_code.lower() == "cy-gb":
             return "Wales"
@@ -1049,8 +1075,14 @@ class TranslatorApp:
             audio_bytes = audio_data_int16.tobytes()
             audio = sr.AudioData(audio_bytes, self.samplerate, 2)
             recognized_text = recognizer.recognize_google(audio, language=spoken_language_code)
+            current_language = self.spoken_language_var.get()
             if recognized_text.strip():
-                self.add_message_to_queue(f"Recognized ({self.spoken_language_var.get()}): {recognized_text}\n")
+                # Announce the language only if it hasn't been reported yet
+                if self.last_reported_language != current_language:
+                    self.add_message_to_queue(f"{current_language} detected. ")
+                    self.last_reported_language = current_language
+                # Append recognized text side-by-side (with a space)
+                self.add_message_to_queue(f": {recognized_text} ")
                 logging.debug(f"Recognized Text: {recognized_text}")
             else:
                 logging.debug("No meaningful text recognized.")
@@ -1070,31 +1102,6 @@ class TranslatorApp:
         except Exception as e:
             self.add_message_to_queue(f"Error processing audio: {e}\n")
             logging.exception("Unexpected error during audio processing.")
-
-    def translate_text(self, text, target_language):
-        cache_key = (text.lower(), target_language)
-        with self.cache_lock:
-            if cache_key in self.translation_cache:
-                self.translation_cache.move_to_end(cache_key)
-                cached_translation = self.translation_cache[cache_key]
-                logging.debug("Translation retrieved from cache.")
-                return cached_translation
-        try:
-            target_language_mapped = self.map_language_for_translation(target_language)
-            source_language_mapped = self.map_language_for_translation(self.current_spoken_language)
-            translator = GoogleTranslator(source=source_language_mapped, target=target_language_mapped)
-            translated = translator.translate(text)
-            with self.cache_lock:
-                self.translation_cache[cache_key] = translated
-                if len(self.translation_cache) > self.cache_size:
-                    oldest = next(iter(self.translation_cache))
-                    del self.translation_cache[oldest]
-                    logging.debug("Oldest translation removed from cache to maintain size.")
-            return translated
-        except Exception as e:
-            self.add_translation_to_queue(f"Translation failed: {e}\n")
-            logging.error(f"Translation failed: {e}")
-            return None
 
     def worker_thread(self, task):
         spoken_language_code, target_language_code, audio_data = task
