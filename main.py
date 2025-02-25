@@ -2,9 +2,10 @@ import os
 import subprocess
 import re  # For sentence splitting
 import warnings
+
 # Stable version. Lots of additions. 24/02/2025
-#Tom Moir and ChatGPT 03Mini and High
-#Free to use. Just acknowledge the source please.
+# Tom Moir and ChatGPT 03Mini and High
+# Free to use. Just acknowledge the source please.
 # Optionally, filter out EbookLib warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="ebooklib.epub")
 warnings.filterwarnings("ignore", category=FutureWarning, module="ebooklib.epub")
@@ -22,6 +23,8 @@ from scipy.io.wavfile import write, read  # Save and read audio data to/from a f
 from pystray import Icon, Menu, MenuItem  # For system tray functionality
 from PIL import Image, ImageDraw  # For image handling for the system tray icon
 import asyncio  # For asynchronous operations with edge_tts
+import string
+import difflib
 
 # For reading EPUB files:
 from ebooklib import epub
@@ -32,10 +35,12 @@ if os.name == "nt":
     CREATE_NO_WINDOW = 0x08000000
     original_popen = subprocess.Popen
 
+
     def no_window_popen(*args, **kwargs):
         if os.name == "nt":
             kwargs.setdefault("creationflags", CREATE_NO_WINDOW)
         return original_popen(*args, **kwargs)
+
 
     subprocess.Popen = no_window_popen
 
@@ -186,6 +191,9 @@ class TranslatorApp:
         # NEW: Track the last reported spoken language for audio detection messaging
         self.last_reported_language = None
 
+        # NEW: Track the tail of the last recognized audio segment to remove overlaps
+        self.last_recognized_tail = ""
+
     def on_resize(self, event):
         if event.widget == self.root:
             new_scale = min(event.width / self.design_width, event.height / self.design_height)
@@ -329,7 +337,8 @@ class TranslatorApp:
         buffer_size_label = tk.Label(buffer_size_frame, text="Buffer Size:", bg="#e0e0e0", fg="black",
                                      font=self.label_font)
         buffer_size_label.pack(side=tk.LEFT, padx=(0, 10))
-        self.buffer_size_slider = tk.Scale(buffer_size_frame, from_=20, to=120, resolution=10,
+        # Updated buffer slider range: now goes from 20 to 140.
+        self.buffer_size_slider = tk.Scale(buffer_size_frame, from_=20, to=140, resolution=10,
                                            orient="horizontal", variable=self.buffer_size_var,
                                            command=self.update_buffer_size,
                                            length=int(200 * self.scale_factor), font=self.dropdown_font)
@@ -676,7 +685,8 @@ class TranslatorApp:
         if not segment:
             self.root.after(10, self.process_next_text_segment)
             return
-        if self.map_language_for_translation(self.current_target_language) != self.map_language_for_translation(self.current_spoken_language):
+        if self.map_language_for_translation(self.current_target_language) != self.map_language_for_translation(
+                self.current_spoken_language):
             translated_segment = self.translate_text(segment, self.current_target_language)
         else:
             translated_segment = segment
@@ -785,12 +795,12 @@ class TranslatorApp:
     def update_buffer_size(self, value):
         try:
             buffer_size = int(value)
-            if 20 <= buffer_size <= 120:
+            if 20 <= buffer_size <= 140:
                 self.buffer_size = buffer_size
                 self.add_message_to_queue(f"Buffer size set to: {buffer_size}\n")
                 logging.info(f"Buffer size updated to: {buffer_size}")
             else:
-                self.add_message_to_queue("Buffer size must be between 20 and 120.\n")
+                self.add_message_to_queue("Buffer size must be between 20 and 140.\n")
                 logging.warning("Attempted to set buffer size outside allowed range.")
         except ValueError:
             self.add_message_to_queue("Invalid buffer size value.\n")
@@ -1074,6 +1084,29 @@ class TranslatorApp:
         finally:
             self.root.after(100, self.process_mic_level_queue)
 
+    # NEW: Remove overlapping words using difflib fuzzy matching.
+    def remove_overlap(self, new_text, previous_tail):
+        # Normalize texts: lowercase and remove punctuation.
+        translator_obj = str.maketrans('', '', string.punctuation)
+        norm_new = new_text.lower().translate(translator_obj)
+        norm_tail = previous_tail.lower().translate(translator_obj)
+
+        new_words = norm_new.split()
+        tail_words = norm_tail.split()
+
+        if not tail_words or not new_words:
+            return new_text
+
+        matcher = difflib.SequenceMatcher(None, tail_words, new_words)
+        match = matcher.find_longest_match(0, len(tail_words), 0, len(new_words))
+
+        # If a match of at least 2 words is found, remove that many words from the beginning.
+        if match.size >= 2:
+            original_new_words = new_text.split()
+            cleaned = " ".join(original_new_words[match.b + match.size:])
+            return cleaned
+        return new_text
+
     def process_audio_buffer(self, spoken_language_code, target_language_code, audio_data):
         recognizer = sr.Recognizer()
         try:
@@ -1090,12 +1123,17 @@ class TranslatorApp:
                 if self.last_reported_language != current_language:
                     self.add_message_to_queue(f"{current_language} selected ")
                     self.last_reported_language = current_language
-                # Append recognized text side-by-side (with a space)
-                self.add_message_to_queue(f": {recognized_text} ")
-                logging.debug(f"Recognized Text: {recognized_text}")
+                # Remove overlapping words based on the previous tail.
+                cleaned_text = self.remove_overlap(recognized_text, self.last_recognized_tail)
+                # Update the tail to be the last 5 words of the current recognized text.
+                self.last_recognized_tail = " ".join(recognized_text.split()[-5:])
+                # Append recognized text with cleaned overlaps.
+                self.add_message_to_queue(f": {cleaned_text} ")
+                logging.debug(f"Recognized Text: {cleaned_text}")
             else:
                 logging.debug("No meaningful text recognized.")
-            if self.map_language_for_translation(target_language_code) != self.map_language_for_translation(spoken_language_code):
+            if self.map_language_for_translation(target_language_code) != self.map_language_for_translation(
+                    spoken_language_code):
                 translated_text = self.translate_text(recognized_text, target_language_code)
                 if translated_text:
                     self.add_translation_to_queue(f"{translated_text} ")
@@ -1301,7 +1339,8 @@ class TranslatorApp:
                 selected_voice_entry = self.voice_var.get()
                 selected_voice_name = (selected_voice_entry.split(" - ")[1]
                                        if " - " in selected_voice_entry else selected_voice_entry)
-                logging.debug(f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
+                logging.debug(
+                    f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
                 selected_voice = next((voice for voice in self.edge_tts_voices
                                        if self.strip_voice_prefix(voice['Name']) == selected_voice_name), None)
                 if not selected_voice:
