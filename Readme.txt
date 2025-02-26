@@ -29,7 +29,7 @@ Requirements file is requirements.txt
 use.  pip install -r requirements.txt
 
 Note latest update reads text files and epub files. I attach a couple of open source book extracts to test out the file read and experimentation. If you compile this with auto-py-to-exe you need the icon.ico file to add.
-Also when running the .exe if compiled you need the icon in the same directory or the minimize to tray will not work.
+Also when running the .exe if compiled you need the icon in the same directory or the minimize to tray will not work. Same goes for the logo ie logo.jpg or no logo will appear on top right hand side op root window.
 
 Tom Moir
 tomspeechnz@gmail.com
