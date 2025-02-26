@@ -140,7 +140,7 @@ class TranslatorApp:
         self.tts_rate_var = tk.DoubleVar(value=100)
 
         # NEW: Overlap percentage control (0% to 20%) with default 20%
-        self.overlap_percentage = tk.DoubleVar(value=20)
+        self.overlap_percentage = tk.DoubleVar(value=4)
 
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
@@ -153,7 +153,8 @@ class TranslatorApp:
         self.label_font = tkfont.Font(family="Arial", size=int(10.5 * self.scale_factor))
         self.dropdown_font = tkfont.Font(family="Arial", size=int(9 * self.scale_factor))
         self.button_font = tkfont.Font(family="Arial", size=int(10.5 * self.scale_factor))
-        self.main_button_font = tkfont.Font(family="Arial", size=int(0.75 * self.button_font.actual("size")))
+        # Use the same size for main buttons in all windows
+        self.main_button_font = tkfont.Font(family="Arial", size=int(10.5 * self.scale_factor))
         self.text_font = tkfont.Font(family="Arial", size=int(10.5 * self.scale_factor))
 
         combobox_width = int(60 * self.scale_factor)
@@ -164,7 +165,7 @@ class TranslatorApp:
         self.current_spoken_language = self.languages.get("English (US)", "en")
         self.current_target_language = self.languages.get("English (US)", "en")
 
-        self.buffer_size_var = tk.IntVar(value=40)
+        self.buffer_size_var = tk.IntVar(value=100)
         self.buffer_size = self.buffer_size_var.get()
 
         self.configure_ffmpeg()
@@ -187,6 +188,7 @@ class TranslatorApp:
 
         self.spoken_language_var.trace_add('write', self.update_spoken_language)
         self.target_language_var.trace_add('write', self.update_target_language)
+        # Bind the resize event after widgets are created.
         self.root.bind("<Configure>", self.on_resize)
 
         # NEW: Track the last reported spoken language for audio detection messaging
@@ -204,9 +206,12 @@ class TranslatorApp:
                 self.label_font.configure(size=int(10.5 * self.scale_factor))
                 self.dropdown_font.configure(size=int(9 * self.scale_factor))
                 self.button_font.configure(size=int(10.5 * self.scale_factor))
-                self.main_button_font.configure(size=int(0.75 * self.button_font.actual("size")))
+                self.main_button_font.configure(size=int(10.5 * self.scale_factor))
                 self.text_font.configure(size=int(10.5 * self.scale_factor))
                 logging.debug(f"Dynamic resize: new scale factor set to {self.scale_factor}")
+                if hasattr(self, "logo_label"):
+                    # Update the logo placement to remain anchored at the top-right.
+                    self.logo_label.place_configure(relx=1.0, y=0, anchor="ne")
 
     def start_tts_loop(self):
         asyncio.set_event_loop(self.tts_loop)
@@ -263,19 +268,22 @@ class TranslatorApp:
 
         # ------------------ Logo Placement ------------------
         try:
-            # Load and resize the logo to approximately 150x150 pixels (~4cm square)
+            # Attempt to load and resize the logo to approximately 150x150 pixels (~4cm square)
             logo_original = Image.open("logo.jpg")
             logo_resized = logo_original.resize((150, 150), Image.LANCZOS)
             self.logo_image = ImageTk.PhotoImage(logo_resized)
-            # Create a label for the logo and place it in the top right corner
+            # Place the logo using relative positioning (anchored at top-right)
             self.logo_label = tk.Label(self.root, image=self.logo_image, bg="#f4f4f4", bd=0)
-            self.logo_label.place(x=window_width - 150, y=0)
+            self.logo_label.place(relx=1.0, y=0, anchor="ne")
+            self.logo_label.lift()  # Bring the logo to the front.
         except Exception as e:
             logging.error(f"Error loading logo: {e}")
             self.add_message_to_queue(f"Error loading logo: {e}\n")
-        # ----------------------------------------------------
+            # Create a dummy logo_label so that later code does not crash.
+            self.logo_label = tk.Label(self.root, text="", bg="#f4f4f4")
+            self.logo_label.place(relx=1.0, y=0, anchor="ne")
 
-        # Top frame for language and device controls.
+        # ------------------ Top Frame for Language and Device Controls ------------------
         top_frame = tk.Frame(self.root, bg="#e0e0e0", bd=2, relief="groove",
                              padx=0, pady=int(7.5 * self.scale_factor))
         top_frame.pack(side=tk.TOP, fill="x")
@@ -349,20 +357,19 @@ class TranslatorApp:
                                command=self.set_gain, font=self.label_font)
         gain_slider.set(1.0)
         gain_slider.pack(pady=int(7.5 * self.scale_factor))
+
         buffer_size_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         buffer_size_frame.pack(pady=int(7.5 * self.scale_factor))
         buffer_size_label = tk.Label(buffer_size_frame, text="Buffer Size:", bg="#e0e0e0", fg="black",
                                      font=self.label_font)
         buffer_size_label.pack(side=tk.LEFT, padx=(0, 10))
-        # Updated buffer slider range: now goes from 20 to 140.
         self.buffer_size_slider = tk.Scale(buffer_size_frame, from_=20, to=140, resolution=10,
                                            orient="horizontal", variable=self.buffer_size_var,
                                            command=self.update_buffer_size,
                                            length=int(200 * self.scale_factor), font=self.dropdown_font)
         self.buffer_size_slider.pack(side=tk.LEFT)
-        self.buffer_size_slider.set(40)
+        self.buffer_size_slider.set(100)
 
-        # NEW: Overlap slider control from 0% to 20%.
         overlap_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         overlap_frame.pack(pady=int(7.5 * self.scale_factor))
         overlap_label = tk.Label(overlap_frame, text="Overlap (%):", bg="#e0e0e0", fg="black", font=self.label_font)
@@ -394,11 +401,11 @@ class TranslatorApp:
         minimize_button.pack(side=tk.LEFT, padx=5)
 
         self.create_translation_window()
-        # Bring the logo to the front so it is not covered by other widgets.
+        # Ensure logo is on top.
         self.logo_label.lift()
 
     def open_listbox_input_window(self):
-        # (Omitted for brevity – same as previous version)
+        # (Omitted for brevity – same as previous version, except updated button fonts)
         self.input_listbox = None
         self.input_text_box = None
         text_window = tk.Toplevel(self.root)
@@ -432,10 +439,10 @@ class TranslatorApp:
         self.vernier_slider.bind("<ButtonPress-1>", self.vernier_press)
         self.vernier_slider.bind("<B1-Motion>", self.vernier_motion)
         self.vernier_slider.bind("<ButtonRelease-1>", self.vernier_release)
+        # Updated button fonts: using self.main_button_font for consistency
         button_frame = tk.Frame(text_window, bg="#f4f4f4")
         button_frame.pack(pady=10, anchor="w")
-        small_button_font = tkfont.Font(family=self.main_button_font.actual("family"),
-                                        size=int(self.main_button_font.actual("size") * 0.75))
+        small_button_font = self.main_button_font  # Use the same font as the main window
         load_file_button = tk.Button(button_frame, text="Load File",
                                      command=self.read_into_listbox,
                                      bg="silver", fg="black", font=small_button_font,
@@ -526,10 +533,10 @@ class TranslatorApp:
         self.vernier_slider.bind("<ButtonPress-1>", self.vernier_press)
         self.vernier_slider.bind("<B1-Motion>", self.vernier_motion)
         self.vernier_slider.bind("<ButtonRelease-1>", self.vernier_release_textbox)
+        # Updated button fonts: using self.main_button_font for consistency
         button_frame = tk.Frame(text_window, bg="#f4f4f4")
         button_frame.pack(pady=10, anchor="w")
-        small_button_font = tkfont.Font(family=self.main_button_font.actual("family"),
-                                        size=int(self.main_button_font.actual("size") * 0.75))
+        small_button_font = self.main_button_font  # Use the same font as the main window
         submit_button = tk.Button(button_frame, text="Submit",
                                   command=lambda: self.submit_text_input(self.input_text_box),
                                   bg="silver", fg="black", font=small_button_font,
@@ -545,11 +552,19 @@ class TranslatorApp:
                                   bg="silver", fg="black", font=small_button_font,
                                   relief="raised", bd=4)
         resume_button.pack(side=tk.LEFT, padx=5)
+        # New Paste button to insert clipboard content
+        paste_button = tk.Button(button_frame, text="Paste",
+                                 command=lambda: self.input_text_box.insert(tk.INSERT, self.root.clipboard_get()),
+                                 bg="silver", fg="black", font=small_button_font,
+                                 relief="raised", bd=4)
+        paste_button.pack(side=tk.LEFT, padx=5)
         close_button = tk.Button(button_frame, text="Close",
                                  command=text_window.destroy,
                                  bg="silver", fg="black", font=small_button_font,
                                  relief="raised", bd=4)
         close_button.pack(side=tk.LEFT, padx=5)
+
+    # ... (Remaining methods remain unchanged)
 
     def listbox_update_selection(self, value):
         try:
@@ -715,8 +730,7 @@ class TranslatorApp:
         if not segment:
             self.root.after(10, self.process_next_text_segment)
             return
-        if self.map_language_for_translation(self.current_target_language) != self.map_language_for_translation(
-                self.current_spoken_language):
+        if self.map_language_for_translation(self.current_target_language) != self.map_language_for_translation(self.current_spoken_language):
             translated_segment = self.translate_text(segment, self.current_target_language)
         else:
             translated_segment = segment
@@ -761,7 +775,6 @@ class TranslatorApp:
             self.add_message_to_queue(f"Error flushing buffers: {e}\n")
             logging.error(f"Error flushing buffers: {e}")
 
-    # NEW: Translation method using GoogleTranslator with caching
     def translate_text(self, text, target_language):
         cache_key = (text.lower(), target_language)
         with self.cache_lock:
@@ -895,7 +908,6 @@ class TranslatorApp:
                                     font=self.dropdown_font)
         font_size_slider.set(20)
         font_size_slider.pack(side=tk.LEFT, padx=(10, 0), pady=5)
-        # NEW: TTS Speech Rate slider (percentage; 100 = normal speed)
         tts_rate_frame = tk.Frame(translation_window, bg="#f4f4f4")
         tts_rate_frame.grid(row=4, column=0, sticky="ew", padx=int(10 * self.scale_factor),
                             pady=(5, 10))
@@ -911,10 +923,9 @@ class TranslatorApp:
                                        bg="silver", fg="black", font=self.main_button_font,
                                        relief="raised", bd=4)
         save_output_button.place(relx=0.95, rely=0.95, anchor="se")
-        # NEW: Clear Screen button to clear the translated text box.
         clear_button = tk.Button(translation_window, text="Clear Screen", command=self.clear_translated_text,
                                  bg="silver", fg="black", font=self.main_button_font, relief="raised", bd=4)
-        clear_button.place(relx=0.75, rely=0.95, anchor="s")
+        clear_button.place(relx=0.7, rely=0.95, anchor="s")
 
     def clear_translated_text(self):
         self.translated_text_box.delete("1.0", tk.END)
@@ -1122,23 +1133,16 @@ class TranslatorApp:
         finally:
             self.root.after(100, self.process_mic_level_queue)
 
-    # NEW: Remove overlapping words using difflib fuzzy matching.
     def remove_overlap(self, new_text, previous_tail):
-        # Normalize texts: lowercase and remove punctuation.
         translator_obj = str.maketrans('', '', string.punctuation)
         norm_new = new_text.lower().translate(translator_obj)
         norm_tail = previous_tail.lower().translate(translator_obj)
-
         new_words = norm_new.split()
         tail_words = norm_tail.split()
-
         if not tail_words or not new_words:
             return new_text
-
         matcher = difflib.SequenceMatcher(None, tail_words, new_words)
         match = matcher.find_longest_match(0, len(tail_words), 0, len(new_words))
-
-        # If a match of at least 2 words is found, remove that many words from the beginning.
         if match.size >= 2:
             original_new_words = new_text.split()
             cleaned = " ".join(original_new_words[match.b + match.size:])
@@ -1157,21 +1161,16 @@ class TranslatorApp:
             recognized_text = recognizer.recognize_google(audio, language=spoken_language_code)
             current_language = self.spoken_language_var.get()
             if recognized_text.strip():
-                # Announce the language only if it hasn't been reported yet
                 if self.last_reported_language != current_language:
                     self.add_message_to_queue(f"{current_language} selected ")
                     self.last_reported_language = current_language
-                # Remove overlapping words based on the previous tail.
                 cleaned_text = self.remove_overlap(recognized_text, self.last_recognized_tail)
-                # Update the tail to be the last 5 words of the current recognized text.
                 self.last_recognized_tail = " ".join(recognized_text.split()[-5:])
-                # Append recognized text with cleaned overlaps.
                 self.add_message_to_queue(f": {cleaned_text} ")
                 logging.debug(f"Recognized Text: {cleaned_text}")
             else:
                 logging.debug("No meaningful text recognized.")
-            if self.map_language_for_translation(target_language_code) != self.map_language_for_translation(
-                    spoken_language_code):
+            if self.map_language_for_translation(target_language_code) != self.map_language_for_translation(spoken_language_code):
                 translated_text = self.translate_text(recognized_text, target_language_code)
                 if translated_text:
                     self.add_translation_to_queue(f"{translated_text} ")
@@ -1213,7 +1212,6 @@ class TranslatorApp:
                 self.executor.submit(self.worker_thread,
                                      (spoken_language_code, target_language_code, self.buffered_chunks.copy()))
                 logging.debug(f"Enqueued audio buffer with {len(self.buffered_chunks)} chunks for processing.")
-                # Use the user-controlled overlap percentage.
                 overlap = self.overlap_percentage.get() / 100.0
                 retain_chunks = int(overlap * len(self.buffered_chunks))
                 self.buffered_chunks = self.buffered_chunks[-retain_chunks:] if retain_chunks > 0 else []
@@ -1367,7 +1365,6 @@ class TranslatorApp:
             logging.error(f"Error toggling TTS: {e}")
 
     async def async_speak_text(self, text, retry_count=3, origin="audio"):
-        # Generate TTS using plain text and pass a rate parameter if not at default.
         for attempt in range(1, retry_count + 1):
             if origin == "audio" and self.current_tts_text != text:
                 logging.debug("TTS text changed. Cancelling current TTS.")
@@ -1379,8 +1376,7 @@ class TranslatorApp:
                 selected_voice_entry = self.voice_var.get()
                 selected_voice_name = (selected_voice_entry.split(" - ")[1]
                                        if " - " in selected_voice_entry else selected_voice_entry)
-                logging.debug(
-                    f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
+                logging.debug(f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
                 selected_voice = next((voice for voice in self.edge_tts_voices
                                        if self.strip_voice_prefix(voice['Name']) == selected_voice_name), None)
                 if not selected_voice:
@@ -1390,8 +1386,7 @@ class TranslatorApp:
                     return
                 voice = selected_voice['ShortName']
                 logging.debug(f"Using voice: {voice}")
-                slider_value = self.tts_rate_var.get()  # 100 means normal speed.
-                # If slider is exactly 100, do not pass a rate parameter.
+                slider_value = self.tts_rate_var.get()
                 if slider_value == 100:
                     logging.debug("Using default speed (no rate parameter).")
                     communicator = edge_tts.Communicate(text, voice=voice)
@@ -1590,13 +1585,11 @@ class TranslatorApp:
             self.add_message_to_queue(f"Error updating voice combobox: {e}\n")
             logging.error(f"Error updating voice combobox: {e}")
 
-    # NEW: When target language is updated, try to set the TTS voice combobox to the first matching voice.
     def update_tts_voice_selection(self):
         if not hasattr(self, 'edge_tts_voices') or not self.edge_tts_voices:
             self.add_message_to_queue("TTS voices not loaded, cannot update TTS voice for target language.\n")
             return
         target_code = self.current_target_language.split('-')[0].lower()
-        # Map Hebrew's legacy code "iw" to "he" to match TTS voice locales.
         if target_code == "iw":
             target_code = "he"
         filtered = [voice for voice in self.edge_tts_voices
@@ -1624,7 +1617,6 @@ class TranslatorApp:
         try:
             self.current_target_language = self.languages.get(self.target_language_var.get(), "en")
             logging.debug(f"Target language updated to: {self.current_target_language}")
-            # NEW: Update the TTS voice selection based on target language
             self.update_tts_voice_selection()
         except Exception as e:
             self.add_message_to_queue(f"Error updating target language: {e}\n")
