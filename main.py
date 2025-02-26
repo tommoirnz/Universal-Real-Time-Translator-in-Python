@@ -141,6 +141,9 @@ class TranslatorApp:
         # NEW: TTS speech rate slider (percentage); 100 = normal speed.
         self.tts_rate_var = tk.DoubleVar(value=100)
 
+        # NEW: Overlap percentage control (0% to 20%) with default 20%
+        self.overlap_percentage = tk.DoubleVar(value=20)
+
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         self.scale_factor = min(screen_width / 800, screen_height / 700) * 0.75
@@ -344,6 +347,17 @@ class TranslatorApp:
                                            length=int(200 * self.scale_factor), font=self.dropdown_font)
         self.buffer_size_slider.pack(side=tk.LEFT)
         self.buffer_size_slider.set(40)
+
+        # NEW: Overlap slider control from 0% to 20%.
+        overlap_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
+        overlap_frame.pack(pady=int(7.5 * self.scale_factor))
+        overlap_label = tk.Label(overlap_frame, text="Overlap (%):", bg="#e0e0e0", fg="black", font=self.label_font)
+        overlap_label.pack(side=tk.LEFT, padx=(0, 10))
+        self.overlap_slider = tk.Scale(overlap_frame, from_=0, to=20, resolution=1,
+                                       orient="horizontal", variable=self.overlap_percentage,
+                                       font=self.dropdown_font)
+        self.overlap_slider.pack(side=tk.LEFT)
+
         self.output_window_text_box = tk.Text(self.root, height=int(15 * self.scale_factor),
                                               width=int(60 * self.scale_factor),
                                               bg="#ffffff", font=self.text_font,
@@ -881,6 +895,14 @@ class TranslatorApp:
                                        bg="silver", fg="black", font=self.main_button_font,
                                        relief="raised", bd=4)
         save_output_button.place(relx=0.95, rely=0.95, anchor="se")
+        # NEW: Clear Screen button to clear the translated text box.
+        clear_button = tk.Button(translation_window, text="Clear Screen", command=self.clear_translated_text,
+                                 bg="silver", fg="black", font=self.main_button_font, relief="raised", bd=4)
+        clear_button.place(relx=0.75, rely=0.95, anchor="s")
+
+    def clear_translated_text(self):
+        self.translated_text_box.delete("1.0", tk.END)
+        self.add_message_to_queue("Translation output cleared.\n")
 
     def save_translation_output(self):
         output_text = self.translated_text_box.get("1.0", tk.END).strip()
@@ -1175,8 +1197,10 @@ class TranslatorApp:
                 self.executor.submit(self.worker_thread,
                                      (spoken_language_code, target_language_code, self.buffered_chunks.copy()))
                 logging.debug(f"Enqueued audio buffer with {len(self.buffered_chunks)} chunks for processing.")
-                retain_chunks = int(0.2 * len(self.buffered_chunks))
-                self.buffered_chunks = self.buffered_chunks[-retain_chunks:]
+                # Use the user-controlled overlap percentage.
+                overlap = self.overlap_percentage.get() / 100.0
+                retain_chunks = int(overlap * len(self.buffered_chunks))
+                self.buffered_chunks = self.buffered_chunks[-retain_chunks:] if retain_chunks > 0 else []
         except Exception as e:
             self.add_message_to_queue(f"Error in audio callback: {e}\n")
             logging.error(f"Error in audio callback: {e}")
