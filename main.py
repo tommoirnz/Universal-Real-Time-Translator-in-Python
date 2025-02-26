@@ -21,7 +21,7 @@ import threading  # For running tasks in the background
 import queue  # Queue for communication between threads
 from scipy.io.wavfile import write, read  # Save and read audio data to/from a file
 from pystray import Icon, Menu, MenuItem  # For system tray functionality
-from PIL import Image, ImageDraw  # For image handling for the system tray icon
+from PIL import Image, ImageDraw, ImageTk  # For image handling (including logo display)
 import asyncio  # For asynchronous operations with edge_tts
 import string
 import difflib
@@ -35,12 +35,10 @@ if os.name == "nt":
     CREATE_NO_WINDOW = 0x08000000
     original_popen = subprocess.Popen
 
-
     def no_window_popen(*args, **kwargs):
         if os.name == "nt":
             kwargs.setdefault("creationflags", CREATE_NO_WINDOW)
         return original_popen(*args, **kwargs)
-
 
     subprocess.Popen = no_window_popen
 
@@ -258,8 +256,24 @@ class TranslatorApp:
 
     def create_widgets(self):
         self.root.title("Real-Time Language Translator")
-        self.root.geometry(f"{int(600 * self.scale_factor)}x{int(600 * self.scale_factor)}")
+        window_width = int(600 * self.scale_factor)
+        window_height = int(600 * self.scale_factor)
+        self.root.geometry(f"{window_width}x{window_height}")
         self.root.configure(bg="#f4f4f4")
+
+        # ------------------ Logo Placement ------------------
+        try:
+            # Load and resize the logo to approximately 150x150 pixels (~4cm square)
+            logo_original = Image.open("logo.jpg")
+            logo_resized = logo_original.resize((150, 150), Image.LANCZOS)
+            self.logo_image = ImageTk.PhotoImage(logo_resized)
+            # Create a label for the logo and place it in the top right corner
+            self.logo_label = tk.Label(self.root, image=self.logo_image, bg="#f4f4f4", bd=0)
+            self.logo_label.place(x=window_width - 150, y=0)
+        except Exception as e:
+            logging.error(f"Error loading logo: {e}")
+            self.add_message_to_queue(f"Error loading logo: {e}\n")
+        # ----------------------------------------------------
 
         # Top frame for language and device controls.
         top_frame = tk.Frame(self.root, bg="#e0e0e0", bd=2, relief="groove",
@@ -380,6 +394,8 @@ class TranslatorApp:
         minimize_button.pack(side=tk.LEFT, padx=5)
 
         self.create_translation_window()
+        # Bring the logo to the front so it is not covered by other widgets.
+        self.logo_label.lift()
 
     def open_listbox_input_window(self):
         # (Omitted for brevity – same as previous version)
