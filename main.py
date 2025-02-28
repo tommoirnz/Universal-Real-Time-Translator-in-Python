@@ -35,10 +35,12 @@ if os.name == "nt":
     CREATE_NO_WINDOW = 0x08000000
     original_popen = subprocess.Popen
 
+
     def no_window_popen(*args, **kwargs):
         if os.name == "nt":
             kwargs.setdefault("creationflags", CREATE_NO_WINDOW)
         return original_popen(*args, **kwargs)
+
 
     subprocess.Popen = no_window_popen
 
@@ -79,6 +81,96 @@ def epub_to_text(epub_path):
     except Exception as e:
         logging.error(f"Error converting EPUB to text: {e}")
         return ""
+
+
+def merge_short_segments(segments, min_word_count=3, min_char_threshold=4):
+    """
+    Merges segments that are too short.
+
+    A segment is considered too short if:
+      - It has fewer than min_word_count words, or
+      - It is a single token (contains no spaces) and its length (after removing periods)
+        is less than or equal to min_char_threshold.
+
+    The function performs two passes:
+      1. First, merge a short segment with the previous segment if available.
+      2. Then, for any remaining short segment (e.g. as the first segment), merge it with the following segment.
+    """
+    segments = [s.strip() for s in segments if s.strip()]
+    if not segments:
+        return segments
+
+    def is_too_short(seg):
+        if len(seg.split()) < min_word_count:
+            return True
+        token = seg.replace(".", "")
+        if " " not in seg and token.isalpha() and len(token) <= min_char_threshold:
+            return True
+        return False
+
+    merged = []
+    for seg in segments:
+        if is_too_short(seg):
+            if merged:
+                merged[-1] += " " + seg
+            else:
+                merged.append(seg)
+        else:
+            merged.append(seg)
+
+    final = []
+    i = 0
+    while i < len(merged):
+        seg = merged[i]
+        if is_too_short(seg) and i + 1 < len(merged):
+            new_seg = seg + " " + merged[i + 1]
+            final.append(new_seg)
+            i += 2
+        else:
+            final.append(seg)
+            i += 1
+    return final
+
+
+def split_text_with_fallback(text, fallback_word_count=300):
+    """
+    Splits text using punctuation first.
+    Then, for each resulting segment, if it exceeds fallback_word_count words,
+    splits that segment into chunks of fallback_word_count words.
+    """
+    raw_segments = re.split(r'(?<=[.!?])\s+', text)
+    new_segments = []
+    for seg in raw_segments:
+        words = seg.split()
+        if len(words) > fallback_word_count:
+            # Split this segment into chunks of fallback_word_count words.
+            for i in range(0, len(words), fallback_word_count):
+                new_segments.append(" ".join(words[i:i + fallback_word_count]))
+        else:
+            new_segments.append(seg)
+    return new_segments
+
+
+def split_text_for_tts(text, max_len=2000):
+    """
+    Splits a long text into chunks that are each at most max_len characters.
+    Splitting is done at word boundaries.
+    """
+    words = text.split()
+    chunks = []
+    current_chunk = ""
+    for word in words:
+        if current_chunk:
+            if len(current_chunk) + len(word) + 1 > max_len:
+                chunks.append(current_chunk)
+                current_chunk = word
+            else:
+                current_chunk += " " + word
+        else:
+            current_chunk = word
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
 
 
 class TranslatorApp:
@@ -136,10 +228,10 @@ class TranslatorApp:
         self.listbox_speed_var = tk.IntVar(value=5)
         self.textbox_speed_var = tk.IntVar(value=5)
 
-        # NEW: TTS speech rate slider (percentage); 100 = normal speed.
+        # TTS speech rate slider (percentage); 100 = normal speed.
         self.tts_rate_var = tk.DoubleVar(value=100)
 
-        # NEW: Overlap percentage control (0% to 20%) with default 20%
+        # Overlap percentage control (0% to 20%) with default 20%
         self.overlap_percentage = tk.DoubleVar(value=4)
 
         screen_width = self.root.winfo_screenwidth()
@@ -153,7 +245,6 @@ class TranslatorApp:
         self.label_font = tkfont.Font(family="Arial", size=int(10.5 * self.scale_factor))
         self.dropdown_font = tkfont.Font(family="Arial", size=int(9 * self.scale_factor))
         self.button_font = tkfont.Font(family="Arial", size=int(10.5 * self.scale_factor))
-        # Use the same size for main buttons in all windows
         self.main_button_font = tkfont.Font(family="Arial", size=int(10.5 * self.scale_factor))
         self.text_font = tkfont.Font(family="Arial", size=int(10.5 * self.scale_factor))
 
@@ -188,13 +279,9 @@ class TranslatorApp:
 
         self.spoken_language_var.trace_add('write', self.update_spoken_language)
         self.target_language_var.trace_add('write', self.update_target_language)
-        # Bind the resize event after widgets are created.
         self.root.bind("<Configure>", self.on_resize)
 
-        # NEW: Track the last reported spoken language for audio detection messaging
         self.last_reported_language = None
-
-        # NEW: Track the tail of the last recognized audio segment to remove overlaps
         self.last_recognized_tail = ""
 
     def on_resize(self, event):
@@ -210,7 +297,6 @@ class TranslatorApp:
                 self.text_font.configure(size=int(10.5 * self.scale_factor))
                 logging.debug(f"Dynamic resize: new scale factor set to {self.scale_factor}")
                 if hasattr(self, "logo_label"):
-                    # Update the logo placement to remain anchored at the top-right.
                     self.logo_label.place_configure(relx=1.0, y=0, anchor="ne")
 
     def start_tts_loop(self):
@@ -222,7 +308,6 @@ class TranslatorApp:
             logging.error(f"TTS event loop error: {e}")
 
     def stop_tts_loop(self):
-        """Stops the TTS asyncio event loop and waits for the thread to finish."""
         try:
             self.tts_loop.call_soon_threadsafe(self.tts_loop.stop)
             self.tts_thread.join(timeout=5)
@@ -265,147 +350,110 @@ class TranslatorApp:
         window_height = int(600 * self.scale_factor)
         self.root.geometry(f"{window_width}x{window_height}")
         self.root.configure(bg="#f4f4f4")
-
-        # ------------------ Logo Placement ------------------
         try:
-            # Attempt to load and resize the logo to approximately 150x150 pixels (~4cm square)
             logo_original = Image.open("logo.jpg")
             logo_resized = logo_original.resize((150, 150), Image.LANCZOS)
             self.logo_image = ImageTk.PhotoImage(logo_resized)
-            # Place the logo using relative positioning (anchored at top-right)
             self.logo_label = tk.Label(self.root, image=self.logo_image, bg="#f4f4f4", bd=0)
             self.logo_label.place(relx=1.0, y=0, anchor="ne")
-            self.logo_label.lift()  # Bring the logo to the front.
+            self.logo_label.lift()
         except Exception as e:
             logging.error(f"Error loading logo: {e}")
             self.add_message_to_queue(f"Error loading logo: {e}\n")
-            # Create a dummy logo_label so that later code does not crash.
             self.logo_label = tk.Label(self.root, text="", bg="#f4f4f4")
             self.logo_label.place(relx=1.0, y=0, anchor="ne")
-
-        # ------------------ Top Frame for Language and Device Controls ------------------
-        top_frame = tk.Frame(self.root, bg="#e0e0e0", bd=2, relief="groove",
-                             padx=0, pady=int(7.5 * self.scale_factor))
+        top_frame = tk.Frame(self.root, bg="#e0e0e0", bd=2, relief="groove", padx=0, pady=int(7.5 * self.scale_factor))
         top_frame.pack(side=tk.TOP, fill="x")
-        # Bottom frame for audio controls.
-        bottom_frame = tk.Frame(self.root, bg="#e0e0e0", bd=2, relief="groove",
-                                padx=int(7.5 * self.scale_factor),
+        bottom_frame = tk.Frame(self.root, bg="#e0e0e0", bd=2, relief="groove", padx=int(7.5 * self.scale_factor),
                                 pady=int(7.5 * self.scale_factor))
         bottom_frame.pack(side=tk.BOTTOM, fill="x")
-
-        # Language selection controls.
         lang_frame = tk.Frame(top_frame, bg="#e0e0e0")
         lang_frame.pack(side=tk.TOP, anchor="w", fill="x", padx=0)
-        spoken_language_label = tk.Label(lang_frame, text="Select Spoken Language:", bg="#e0e0e0",
-                                         fg="black", font=self.label_font)
+        spoken_language_label = tk.Label(lang_frame, text="Select Spoken Language:", bg="#e0e0e0", fg="black",
+                                         font=self.label_font)
         spoken_language_label.pack(anchor="w")
         self.spoken_language_var = tk.StringVar(value="English (US)")
         spoken_language_dropdown = ttk.Combobox(lang_frame, textvariable=self.spoken_language_var,
-                                                values=list(self.languages.keys()),
-                                                state="readonly", font=self.dropdown_font)
+                                                values=list(self.languages.keys()), state="readonly",
+                                                font=self.dropdown_font)
         spoken_language_dropdown.pack(anchor="w", pady=(0, 5))
-        target_language_label = tk.Label(lang_frame, text="Select Target Translation Language:",
-                                         bg="#e0e0e0", fg="black", font=self.label_font)
+        target_language_label = tk.Label(lang_frame, text="Select Target Translation Language:", bg="#e0e0e0",
+                                         fg="black", font=self.label_font)
         target_language_label.pack(anchor="w")
         self.target_language_var = tk.StringVar(value="English (US)")
         target_language_dropdown = ttk.Combobox(lang_frame, textvariable=self.target_language_var,
-                                                values=list(self.languages.keys()),
-                                                state="readonly", font=self.dropdown_font)
+                                                values=list(self.languages.keys()), state="readonly",
+                                                font=self.dropdown_font)
         target_language_dropdown.pack(anchor="w", pady=(0, 5))
-        self.swap_button = tk.Button(lang_frame, text="Swap Languages", command=self.swap_languages,
-                                     bg="silver", fg="black", font=self.main_button_font, relief="raised", bd=4)
+        self.swap_button = tk.Button(lang_frame, text="Swap Languages", command=self.swap_languages, bg="silver",
+                                     fg="black", font=self.main_button_font, relief="raised", bd=4)
         self.swap_button.pack(anchor="w", pady=(0, 5))
-
-        # Device selection controls.
         device_frame = tk.Frame(top_frame, bg="#e0e0e0")
-        device_frame.pack(side=tk.TOP, anchor="w", fill="x", padx=(60, 0),
-                          pady=(int(7.5 * self.scale_factor), 0))
-        device_label = tk.Label(device_frame, text="Select Microphone Device:", bg="#e0e0e0",
-                                fg="black", font=self.label_font)
+        device_frame.pack(side=tk.TOP, anchor="w", fill="x", padx=(60, 0), pady=(int(7.5 * self.scale_factor), 0))
+        device_label = tk.Label(device_frame, text="Select Microphone Device:", bg="#e0e0e0", fg="black",
+                                font=self.label_font)
         device_label.pack(anchor="w")
-        self.device_combobox = ttk.Combobox(device_frame, state="readonly",
-                                            font=self.dropdown_font, width=60)
+        self.device_combobox = ttk.Combobox(device_frame, state="readonly", font=self.dropdown_font, width=60)
         self.device_combobox.pack(anchor="w", pady=(0, int(3.75 * self.scale_factor)))
-
-        # Bottom frame audio controls.
         self.mic_level = tk.DoubleVar()
         mic_progress = ttk.Progressbar(bottom_frame, orient="horizontal", mode="determinate",
-                                       length=int(375 * self.scale_factor),
-                                       variable=self.mic_level, maximum=100)
+                                       length=int(375 * self.scale_factor), variable=self.mic_level, maximum=100)
         mic_progress.pack(pady=int(7.5 * self.scale_factor))
         button_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         button_frame.pack(pady=int(7.5 * self.scale_factor))
-        self.start_button = tk.Button(button_frame, text="Start Audio Capture",
-                                      command=self.toggle_recognition, bg="silver", fg="black",
-                                      font=self.main_button_font, relief="raised", bd=4)
+        self.start_button = tk.Button(button_frame, text="Start Audio Capture", command=self.toggle_recognition,
+                                      bg="silver", fg="black", font=self.main_button_font, relief="raised", bd=4)
         self.start_button.pack(side=tk.LEFT, padx=5)
-        flush_button = tk.Button(button_frame, text="Flush Buffers",
-                                 command=self.flush_buffers, bg="silver", fg="black",
-                                 font=self.main_button_font, relief="raised", bd=4)
+        flush_button = tk.Button(button_frame, text="Flush Buffers", command=self.flush_buffers, bg="silver",
+                                 fg="black", font=self.main_button_font, relief="raised", bd=4)
         flush_button.pack(side=tk.LEFT, padx=5)
-        read_file_button = tk.Button(button_frame, text="Read File",
-                                     command=self.open_listbox_input_window, bg="silver", fg="black",
-                                     font=self.main_button_font, relief="raised", bd=4)
+        read_file_button = tk.Button(button_frame, text="Read File", command=self.open_listbox_input_window,
+                                     bg="silver", fg="black", font=self.main_button_font, relief="raised", bd=4)
         read_file_button.pack(side=tk.LEFT, padx=5)
-        enter_text_button = tk.Button(button_frame, text="Enter Text",
-                                      command=self.open_textbox_input_window, bg="silver", fg="black",
-                                      font=self.main_button_font, relief="raised", bd=4)
+        enter_text_button = tk.Button(button_frame, text="Enter Text", command=self.open_textbox_input_window,
+                                      bg="silver", fg="black", font=self.main_button_font, relief="raised", bd=4)
         enter_text_button.pack(side=tk.LEFT, padx=5)
-        gain_slider = tk.Scale(bottom_frame, from_=1.0, to_=4.0, resolution=0.1,
-                               orient="horizontal", label="Mic Gain",
-                               length=int(225 * self.scale_factor),
-                               command=self.set_gain, font=self.label_font)
+        gain_slider = tk.Scale(bottom_frame, from_=1.0, to_=4.0, resolution=0.1, orient="horizontal", label="Mic Gain",
+                               length=int(225 * self.scale_factor), command=self.set_gain, font=self.label_font)
         gain_slider.set(1.0)
         gain_slider.pack(pady=int(7.5 * self.scale_factor))
-
         buffer_size_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         buffer_size_frame.pack(pady=int(7.5 * self.scale_factor))
         buffer_size_label = tk.Label(buffer_size_frame, text="Buffer Size:", bg="#e0e0e0", fg="black",
                                      font=self.label_font)
         buffer_size_label.pack(side=tk.LEFT, padx=(0, 10))
-        self.buffer_size_slider = tk.Scale(buffer_size_frame, from_=20, to=140, resolution=10,
-                                           orient="horizontal", variable=self.buffer_size_var,
-                                           command=self.update_buffer_size,
+        self.buffer_size_slider = tk.Scale(buffer_size_frame, from_=20, to=140, resolution=10, orient="horizontal",
+                                           variable=self.buffer_size_var, command=self.update_buffer_size,
                                            length=int(200 * self.scale_factor), font=self.dropdown_font)
         self.buffer_size_slider.pack(side=tk.LEFT)
         self.buffer_size_slider.set(100)
-
         overlap_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         overlap_frame.pack(pady=int(7.5 * self.scale_factor))
         overlap_label = tk.Label(overlap_frame, text="Overlap (%):", bg="#e0e0e0", fg="black", font=self.label_font)
         overlap_label.pack(side=tk.LEFT, padx=(0, 10))
-        self.overlap_slider = tk.Scale(overlap_frame, from_=0, to=20, resolution=1,
-                                       orient="horizontal", variable=self.overlap_percentage,
-                                       font=self.dropdown_font)
+        self.overlap_slider = tk.Scale(overlap_frame, from_=0, to=20, resolution=1, orient="horizontal",
+                                       variable=self.overlap_percentage, font=self.dropdown_font)
         self.overlap_slider.pack(side=tk.LEFT)
-
         self.output_window_text_box = tk.Text(self.root, height=int(15 * self.scale_factor),
-                                              width=int(60 * self.scale_factor),
-                                              bg="#ffffff", font=self.text_font,
+                                              width=int(60 * self.scale_factor), bg="#ffffff", font=self.text_font,
                                               bd=3, relief="sunken")
         self.output_window_text_box.pack(side=tk.LEFT, padx=int(7.5 * self.scale_factor),
                                          pady=int(7.5 * self.scale_factor))
         bottom_button_frame = tk.Frame(bottom_frame, bg="#e0e0e0")
         bottom_button_frame.pack(pady=int(7.5 * self.scale_factor))
-        save_button = tk.Button(bottom_button_frame, text="Save Transcript",
-                                command=self.save_transcript, bg="silver", fg="black",
-                                font=self.main_button_font, relief="raised", bd=4)
+        save_button = tk.Button(bottom_button_frame, text="Save Transcript", command=self.save_transcript, bg="silver",
+                                fg="black", font=self.main_button_font, relief="raised", bd=4)
         save_button.pack(side=tk.LEFT, padx=5)
-        exit_button = tk.Button(bottom_button_frame, text="Halt and Clean Exit",
-                                command=self.halt_and_exit, bg="silver", fg="black",
-                                font=self.main_button_font, relief="raised", bd=4)
+        exit_button = tk.Button(bottom_button_frame, text="Halt and Clean Exit", command=self.halt_and_exit,
+                                bg="silver", fg="black", font=self.main_button_font, relief="raised", bd=4)
         exit_button.pack(side=tk.LEFT, padx=5)
-        minimize_button = tk.Button(bottom_button_frame, text="Minimize to Tray",
-                                    command=self.minimize_to_tray, bg="silver", fg="black",
-                                    font=self.main_button_font, relief="raised", bd=4)
+        minimize_button = tk.Button(bottom_button_frame, text="Minimize to Tray", command=self.minimize_to_tray,
+                                    bg="silver", fg="black", font=self.main_button_font, relief="raised", bd=4)
         minimize_button.pack(side=tk.LEFT, padx=5)
-
         self.create_translation_window()
-        # Ensure logo is on top.
         self.logo_label.lift()
 
     def open_listbox_input_window(self):
-        # (Omitted for brevity – same as previous version, except updated button fonts)
         self.input_listbox = None
         self.input_text_box = None
         text_window = tk.Toplevel(self.root)
@@ -421,57 +469,46 @@ class TranslatorApp:
         self.input_listbox = tk.Listbox(listbox_frame, font=self.text_font, yscrollcommand=list_scrollbar.set)
         self.input_listbox.pack(fill=tk.BOTH, expand=True)
         list_scrollbar.config(command=self.input_listbox.yview)
-        speed_slider = tk.Scale(listbox_frame, from_=1, to=10, orient="horizontal",
-                                variable=self.listbox_speed_var, label="Translation Speed",
-                                font=self.text_font)
+        speed_slider = tk.Scale(listbox_frame, from_=1, to=10, orient="horizontal", variable=self.listbox_speed_var,
+                                label="Translation Speed", font=self.text_font)
         speed_slider.pack(fill=tk.X, padx=5, pady=5)
         slider_frame = tk.Frame(main_frame, bg="#f4f4f4")
         slider_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
+        self.jump_slider_value = tk.IntVar(value=1)
         self.jump_slider = tk.Scale(slider_frame, from_=1, to=1, orient="vertical", bg="#f4f4f4",
-                                    command=self.listbox_update_selection)
+                                    variable=self.jump_slider_value, command=self.listbox_update_selection)
         self.jump_slider.pack(side=tk.LEFT, fill=tk.Y)
         self.jump_slider.bind("<ButtonPress-1>", lambda event: self.pause_text_reading())
         self.jump_slider.bind("<ButtonRelease-1>", lambda event: self.jump_via_listbox())
-        self.vernier_slider = tk.Scale(slider_frame, from_=-9, to=9, orient="vertical", resolution=1,
-                                       bg="#f4f4f4", length=int(150 * self.scale_factor))
+        self.vernier_slider = tk.Scale(slider_frame, from_=-9, to=9, orient="vertical", resolution=1, bg="#f4f4f4",
+                                       length=int(150 * self.scale_factor))
         self.vernier_slider.set(0)
         self.vernier_slider.pack(side=tk.LEFT, fill=tk.Y, padx=(5, 0))
         self.vernier_slider.bind("<ButtonPress-1>", self.vernier_press)
         self.vernier_slider.bind("<B1-Motion>", self.vernier_motion)
         self.vernier_slider.bind("<ButtonRelease-1>", self.vernier_release)
-        # Updated button fonts: using self.main_button_font for consistency
         button_frame = tk.Frame(text_window, bg="#f4f4f4")
         button_frame.pack(pady=10, anchor="w")
-        small_button_font = self.main_button_font  # Use the same font as the main window
-        load_file_button = tk.Button(button_frame, text="Load File",
-                                     command=self.read_into_listbox,
-                                     bg="silver", fg="black", font=small_button_font,
-                                     relief="raised", bd=4)
+        small_button_font = self.main_button_font
+        load_file_button = tk.Button(button_frame, text="Load File", command=self.read_into_listbox, bg="silver",
+                                     fg="black", font=small_button_font, relief="raised", bd=4)
         load_file_button.pack(side=tk.LEFT, padx=5)
-        submit_button = tk.Button(button_frame, text="Submit",
-                                  command=self.submit_listbox_input,
-                                  bg="silver", fg="black", font=small_button_font,
-                                  relief="raised", bd=4)
+        submit_button = tk.Button(button_frame, text="Begin", command=self.submit_listbox_input, bg="silver",
+                                  fg="black", font=small_button_font, relief="raised", bd=4)
         submit_button.pack(side=tk.LEFT, padx=5)
-        pause_button = tk.Button(button_frame, text="Pause Reading",
-                                 command=self.pause_text_reading,
-                                 bg="silver", fg="black", font=small_button_font,
-                                 relief="raised", bd=4)
+        pause_button = tk.Button(button_frame, text="Pause Reading", command=self.pause_text_reading, bg="silver",
+                                 fg="black", font=small_button_font, relief="raised", bd=4)
         pause_button.pack(side=tk.LEFT, padx=5)
-        resume_button = tk.Button(button_frame, text="Resume Reading",
-                                  command=self.resume_text_reading,
-                                  bg="silver", fg="black", font=small_button_font,
-                                  relief="raised", bd=4)
+        resume_button = tk.Button(button_frame, text="Resume Reading", command=self.resume_text_reading, bg="silver",
+                                  fg="black", font=small_button_font, relief="raised", bd=4)
         resume_button.pack(side=tk.LEFT, padx=5)
-        close_button = tk.Button(button_frame, text="Close",
-                                 command=text_window.destroy,
-                                 bg="silver", fg="black", font=small_button_font,
-                                 relief="raised", bd=4)
+        close_button = tk.Button(button_frame, text="Close", command=text_window.destroy, bg="silver", fg="black",
+                                 font=small_button_font, relief="raised", bd=4)
         close_button.pack(side=tk.LEFT, padx=5)
         if self.input_listbox.size() > 0:
             self.text_segments = self.input_listbox.get(0, tk.END)
             self.jump_slider.config(from_=1, to=len(self.text_segments))
-            self.jump_slider.set(1)
+            self.jump_slider_value.set(1)
 
     def read_into_listbox(self):
         file_path = filedialog.askopenfilename(
@@ -487,13 +524,15 @@ class TranslatorApp:
             else:
                 with open(file_path, "r", encoding="utf-8") as f:
                     full_text = f.read()
-            self.text_segments = re.split(r'(?<=[.!?])\s+', full_text.strip())
+            # Use fallback splitting for long unpunctuated text.
+            raw_segments = split_text_with_fallback(full_text, fallback_word_count=300)
+            self.text_segments = merge_short_segments(raw_segments, min_word_count=3, min_char_threshold=4)
             self.input_listbox.delete(0, tk.END)
             for seg in self.text_segments:
                 self.input_listbox.insert(tk.END, seg)
             if self.text_segments:
                 self.jump_slider.config(from_=1, to=len(self.text_segments))
-                self.jump_slider.set(1)
+                self.jump_slider_value.set(1)
         except Exception as e:
             messagebox.showerror("File Read Error", f"Error reading file: {e}")
 
@@ -510,61 +549,48 @@ class TranslatorApp:
         text_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar = tk.Scrollbar(text_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.input_text_box = tk.Text(text_frame, height=15, width=40,
-                                      font=self.text_font, bd=3, relief="sunken",
+        self.input_text_box = tk.Text(text_frame, height=15, width=40, font=self.text_font, bd=3, relief="sunken",
                                       yscrollcommand=scrollbar.set)
         self.input_text_box.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.input_text_box.yview)
-        speed_slider = tk.Scale(text_frame, from_=1, to=10, orient="horizontal",
-                                variable=self.textbox_speed_var, label="Translation Speed",
-                                font=self.text_font)
+        speed_slider = tk.Scale(text_frame, from_=1, to=10, orient="horizontal", variable=self.textbox_speed_var,
+                                label="Translation Speed", font=self.text_font)
         speed_slider.pack(fill=tk.X, padx=5, pady=5)
         slider_frame = tk.Frame(main_frame, bg="#f4f4f4")
         slider_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=5)
+        self.jump_slider_value = tk.IntVar(value=1)
         self.jump_slider = tk.Scale(slider_frame, from_=1, to=1, orient="vertical", bg="#f4f4f4",
-                                    command=self.update_highlight_position)
+                                    variable=self.jump_slider_value, command=self.update_highlight_position)
         self.jump_slider.pack(side=tk.LEFT, fill=tk.Y)
         self.jump_slider.bind("<ButtonPress-1>", lambda event: self.pause_text_reading())
         self.jump_slider.bind("<ButtonRelease-1>", lambda event: self.jump_via_textbox())
-        self.vernier_slider = tk.Scale(slider_frame, from_=-9, to=9, orient="vertical", resolution=1,
-                                       bg="#f4f4f4", length=int(150 * self.scale_factor))
+        self.vernier_slider = tk.Scale(slider_frame, from_=-9, to=9, orient="vertical", resolution=1, bg="#f4f4f4",
+                                       length=int(150 * self.scale_factor))
         self.vernier_slider.set(0)
         self.vernier_slider.pack(side=tk.LEFT, fill=tk.Y, padx=(5, 0))
         self.vernier_slider.bind("<ButtonPress-1>", self.vernier_press)
         self.vernier_slider.bind("<B1-Motion>", self.vernier_motion)
         self.vernier_slider.bind("<ButtonRelease-1>", self.vernier_release_textbox)
-        # Updated button fonts: using self.main_button_font for consistency
         button_frame = tk.Frame(text_window, bg="#f4f4f4")
         button_frame.pack(pady=10, anchor="w")
-        small_button_font = self.main_button_font  # Use the same font as the main window
+        small_button_font = self.main_button_font
         submit_button = tk.Button(button_frame, text="Submit",
-                                  command=lambda: self.submit_text_input(self.input_text_box),
-                                  bg="silver", fg="black", font=small_button_font,
-                                  relief="raised", bd=4)
+                                  command=lambda: self.submit_text_input(self.input_text_box), bg="silver", fg="black",
+                                  font=small_button_font, relief="raised", bd=4)
         submit_button.pack(side=tk.LEFT, padx=5)
-        pause_button = tk.Button(button_frame, text="Pause Reading",
-                                 command=self.pause_text_reading,
-                                 bg="silver", fg="black", font=small_button_font,
-                                 relief="raised", bd=4)
+        pause_button = tk.Button(button_frame, text="Pause Reading", command=self.pause_text_reading, bg="silver",
+                                 fg="black", font=small_button_font, relief="raised", bd=4)
         pause_button.pack(side=tk.LEFT, padx=5)
-        resume_button = tk.Button(button_frame, text="Resume Reading",
-                                  command=self.resume_text_reading,
-                                  bg="silver", fg="black", font=small_button_font,
-                                  relief="raised", bd=4)
+        resume_button = tk.Button(button_frame, text="Resume Reading", command=self.resume_text_reading, bg="silver",
+                                  fg="black", font=small_button_font, relief="raised", bd=4)
         resume_button.pack(side=tk.LEFT, padx=5)
-        # New Paste button to insert clipboard content
         paste_button = tk.Button(button_frame, text="Paste",
                                  command=lambda: self.input_text_box.insert(tk.INSERT, self.root.clipboard_get()),
-                                 bg="silver", fg="black", font=small_button_font,
-                                 relief="raised", bd=4)
+                                 bg="silver", fg="black", font=small_button_font, relief="raised", bd=4)
         paste_button.pack(side=tk.LEFT, padx=5)
-        close_button = tk.Button(button_frame, text="Close",
-                                 command=text_window.destroy,
-                                 bg="silver", fg="black", font=small_button_font,
-                                 relief="raised", bd=4)
+        close_button = tk.Button(button_frame, text="Close", command=text_window.destroy, bg="silver", fg="black",
+                                 font=small_button_font, relief="raised", bd=4)
         close_button.pack(side=tk.LEFT, padx=5)
-
-    # ... (Remaining methods remain unchanged)
 
     def listbox_update_selection(self, value):
         try:
@@ -582,7 +608,7 @@ class TranslatorApp:
     def vernier_motion(self, event):
         try:
             offset = int(self.vernier_slider.get())
-            current = int(self.jump_slider.get())
+            current = int(self.jump_slider_value.get())
             master_from = int(self.jump_slider.cget("from"))
             master_to = int(self.jump_slider.cget("to"))
             temp_value = max(master_from, min(current + offset, master_to))
@@ -596,11 +622,11 @@ class TranslatorApp:
     def vernier_release(self, event):
         try:
             offset = int(self.vernier_slider.get())
-            current = int(self.jump_slider.get())
+            current = int(self.jump_slider_value.get())
             master_from = int(self.jump_slider.cget("from"))
             master_to = int(self.jump_slider.cget("to"))
             new_value = max(master_from, min(current + offset, master_to))
-            self.jump_slider.set(new_value)
+            self.jump_slider_value.set(new_value)
             self.jump_via_listbox()
         finally:
             self.vernier_slider.set(0)
@@ -609,11 +635,11 @@ class TranslatorApp:
     def vernier_release_textbox(self, event):
         try:
             offset = int(self.vernier_slider.get())
-            current = int(self.jump_slider.get())
+            current = int(self.jump_slider_value.get())
             master_from = int(self.jump_slider.cget("from"))
             master_to = int(self.jump_slider.cget("to"))
             new_value = max(master_from, min(current + offset, master_to))
-            self.jump_slider.set(new_value)
+            self.jump_slider_value.set(new_value)
             self.jump_via_textbox()
         finally:
             self.vernier_slider.set(0)
@@ -641,7 +667,7 @@ class TranslatorApp:
         if not self.text_segments:
             messagebox.showinfo("No Text", "No text has been loaded yet.")
             return
-        new_index = int(self.jump_slider.get()) - 1
+        new_index = int(self.jump_slider_value.get()) - 1
         if new_index < len(self.text_segments):
             self.text_segment_index = new_index
             self.text_reading_active = True
@@ -657,7 +683,7 @@ class TranslatorApp:
         if not self.text_segments:
             messagebox.showinfo("No Text", "No text has been loaded yet.")
             return
-        new_index = int(self.jump_slider.get()) - 1
+        new_index = int(self.jump_slider_value.get()) - 1
         if new_index < len(self.text_segments):
             self.text_segment_index = new_index
             self.text_reading_active = True
@@ -679,7 +705,24 @@ class TranslatorApp:
             messagebox.showwarning("No Text", "Please enter some text before submitting.")
             return
         self.tts_input_source = "text"
-        self.handle_text_input(text)
+        # Use fallback splitting: first split using punctuation; then split any long segment (>300 words)
+        raw_segments = split_text_with_fallback(text, fallback_word_count=300)
+        self.text_segments = merge_short_segments(raw_segments, min_word_count=3, min_char_threshold=4)
+        self.add_message_to_queue(f"Text Input ({self.spoken_language_var.get()}): {text}\n")
+        self.translated_text_box.delete("1.0", tk.END)
+        with self.cache_lock:
+            self.translation_cache.clear()
+        self.text_segment_index = 0
+        self.text_reading_active = True
+        if self.jump_slider:
+            self.jump_slider.config(from_=1, to=len(self.text_segments))
+            self.jump_slider_value.set(1)
+        if self.input_listbox is not None:
+            self.input_listbox.delete(0, tk.END)
+            for segment in self.text_segments:
+                self.input_listbox.insert(tk.END, segment)
+        self.current_tts_text = ""
+        self.process_next_text_segment()
 
     def submit_listbox_input(self):
         items = self.input_listbox.get(0, tk.END)
@@ -695,12 +738,13 @@ class TranslatorApp:
         self.translated_text_box.delete("1.0", tk.END)
         with self.cache_lock:
             self.translation_cache.clear()
-        self.text_segments = re.split(r'(?<=[.!?])\s+', text)
+        raw_segments = split_text_with_fallback(text, fallback_word_count=300)
+        self.text_segments = merge_short_segments(raw_segments, min_word_count=3, min_char_threshold=4)
         self.text_segment_index = 0
         self.text_reading_active = True
         if self.jump_slider:
             self.jump_slider.config(from_=1, to=len(self.text_segments))
-            self.jump_slider.set(1)
+            self.jump_slider_value.set(1)
         if self.input_listbox is not None:
             self.input_listbox.delete(0, tk.END)
             for segment in self.text_segments:
@@ -714,6 +758,8 @@ class TranslatorApp:
         if self.text_segment_index >= len(self.text_segments):
             return
         segment = self.text_segments[self.text_segment_index].strip().replace("\n", " ")
+        if hasattr(self, "jump_slider_value"):
+            self.jump_slider_value.set(self.text_segment_index + 1)
         self.text_segment_index += 1
         if self.input_listbox is not None:
             self.input_listbox.selection_clear(0, tk.END)
@@ -730,7 +776,8 @@ class TranslatorApp:
         if not segment:
             self.root.after(10, self.process_next_text_segment)
             return
-        if self.map_language_for_translation(self.current_target_language) != self.map_language_for_translation(self.current_spoken_language):
+        if self.map_language_for_translation(self.current_target_language) != self.map_language_for_translation(
+                self.current_spoken_language):
             translated_segment = self.translate_text(segment, self.current_target_language)
         else:
             translated_segment = segment
@@ -775,7 +822,7 @@ class TranslatorApp:
             self.add_message_to_queue(f"Error flushing buffers: {e}\n")
             logging.error(f"Error flushing buffers: {e}")
 
-    def translate_text(self, text, target_language):
+    def _translate_single(self, text, target_language):
         cache_key = (text.lower(), target_language)
         with self.cache_lock:
             if cache_key in self.translation_cache:
@@ -796,6 +843,32 @@ class TranslatorApp:
             self.add_translation_to_queue(f"Translation failed: {e}\n")
             logging.error(f"Translation failed: {e}")
             return None
+
+    def translate_text(self, text, target_language):
+        max_length = 5000
+        if len(text) > max_length:
+            chunks = text.split()  # split into words
+            current_chunk = ""
+            chunk_list = []
+            for word in chunks:
+                if current_chunk:
+                    if len(current_chunk) + len(word) + 1 > max_length:
+                        chunk_list.append(current_chunk)
+                        current_chunk = word
+                    else:
+                        current_chunk += " " + word
+                else:
+                    current_chunk = word
+            if current_chunk:
+                chunk_list.append(current_chunk)
+            translated_chunks = []
+            for chunk in chunk_list:
+                translated_chunk = self._translate_single(chunk, target_language)
+                if translated_chunk is not None:
+                    translated_chunks.append(translated_chunk)
+            return " ".join(translated_chunks)
+        else:
+            return self._translate_single(text, target_language)
 
     def get_country_name_from_locale(self, locale_code):
         if locale_code.lower() == "cy-gb":
@@ -861,67 +934,52 @@ class TranslatorApp:
                         pady=int(10 * self.scale_factor))
         self.translated_text_box = tk.Text(text_frame, height=int(15 * self.scale_factor),
                                            width=int(80 * self.scale_factor), bg="#ffffff",
-                                           font=("Arial", self.font_size_var.get()),
-                                           bd=3, relief="sunken")
+                                           font=("Arial", self.font_size_var.get()), bd=3, relief="sunken")
         self.translated_text_box.pack(fill="both", expand=True)
         controls_frame = tk.Frame(translation_window, bg="#f4f4f4")
         controls_frame.grid(row=1, column=0, sticky="ew", padx=int(10 * self.scale_factor),
                             pady=int(10 * self.scale_factor))
-        tts_check = tk.Checkbutton(controls_frame, text="Enable Text-to-Speech",
-                                   variable=self.tts_enabled, bg="#f4f4f4",
-                                   fg="black", font=self.button_font,
-                                   command=self.toggle_tts)
+        tts_check = tk.Checkbutton(controls_frame, text="Enable Text-to-Speech", variable=self.tts_enabled,
+                                   bg="#f4f4f4", fg="black", font=self.button_font, command=self.toggle_tts)
         tts_check.grid(row=0, column=0, pady=(10, 5), sticky="w")
-        tts_device_label = tk.Label(controls_frame, text="Select TTS Output Device:",
-                                    bg="#f4f4f4", fg="black", font=self.label_font)
+        tts_device_label = tk.Label(controls_frame, text="Select TTS Output Device:", bg="#f4f4f4", fg="black",
+                                    font=self.label_font)
         tts_device_label.grid(row=0, column=1, padx=(10, 0), pady=(10, 5), sticky="w")
-        self.tts_output_device_combobox = ttk.Combobox(controls_frame,
-                                                       textvariable=self.tts_output_device_var,
-                                                       values=self.get_output_devices(),
-                                                       state="readonly",
+        self.tts_output_device_combobox = ttk.Combobox(controls_frame, textvariable=self.tts_output_device_var,
+                                                       values=self.get_output_devices(), state="readonly",
                                                        font=self.dropdown_font, width=30)
         self.tts_output_device_combobox.grid(row=0, column=2, padx=(10, 0), pady=(10, 5), sticky="w")
         self.tts_output_device_combobox.set("Default")
         options_frame = tk.Frame(translation_window, bg="#f4f4f4")
-        options_frame.grid(row=2, column=0, sticky="ew", padx=int(10 * self.scale_factor),
-                           pady=(5, 10))
+        options_frame.grid(row=2, column=0, sticky="ew", padx=int(10 * self.scale_factor), pady=(5, 10))
         voice_frame = tk.Frame(options_frame, bg="#f4f4f4")
         voice_frame.grid(row=0, column=0, padx=(0, 20), pady=5, sticky="w")
-        voice_label = tk.Label(voice_frame, text="Select Voice:", bg="#f4f4f4",
-                               fg="black", font=self.label_font)
+        voice_label = tk.Label(voice_frame, text="Select Voice:", bg="#f4f4f4", fg="black", font=self.label_font)
         voice_label.pack(side=tk.LEFT, padx=(0, 10))
-        self.voice_combobox = ttk.Combobox(voice_frame, textvariable=self.voice_var,
-                                           values=["Loading voices..."],
-                                           state="disabled", font=self.dropdown_font,
-                                           width=50)
+        self.voice_combobox = ttk.Combobox(voice_frame, textvariable=self.voice_var, values=["Loading voices..."],
+                                           state="disabled", font=self.dropdown_font, width=50)
         self.voice_combobox.pack(side=tk.LEFT)
         font_size_frame = tk.Frame(translation_window, bg="#f4f4f4")
-        font_size_frame.grid(row=3, column=0, sticky="ew", padx=int(10 * self.scale_factor),
-                             pady=(5, 10))
-        font_size_label = tk.Label(font_size_frame, text="Translated Text Font Size:",
-                                   bg="#f4f4f4", fg="black", font=self.label_font)
+        font_size_frame.grid(row=3, column=0, sticky="ew", padx=int(10 * self.scale_factor), pady=(5, 10))
+        font_size_label = tk.Label(font_size_frame, text="Translated Text Font Size:", bg="#f4f4f4", fg="black",
+                                   font=self.label_font)
         font_size_label.pack(side=tk.LEFT, padx=(0, 10))
         font_size_slider = tk.Scale(font_size_frame, from_=10, to=40, orient="horizontal",
-                                    length=int(200 * self.scale_factor),
-                                    variable=self.font_size_var,
-                                    command=self.set_translation_font_size,
-                                    font=self.dropdown_font)
+                                    length=int(200 * self.scale_factor), variable=self.font_size_var,
+                                    command=self.set_translation_font_size, font=self.dropdown_font)
         font_size_slider.set(20)
         font_size_slider.pack(side=tk.LEFT, padx=(10, 0), pady=5)
         tts_rate_frame = tk.Frame(translation_window, bg="#f4f4f4")
-        tts_rate_frame.grid(row=4, column=0, sticky="ew", padx=int(10 * self.scale_factor),
-                            pady=(5, 10))
-        tts_rate_label = tk.Label(tts_rate_frame, text="TTS Speech Rate (%):", bg="#f4f4f4",
-                                  fg="black", font=self.label_font)
+        tts_rate_frame.grid(row=4, column=0, sticky="ew", padx=int(10 * self.scale_factor), pady=(5, 10))
+        tts_rate_label = tk.Label(tts_rate_frame, text="TTS Speech Rate (%):", bg="#f4f4f4", fg="black",
+                                  font=self.label_font)
         tts_rate_label.pack(side=tk.LEFT, padx=(0, 10))
-        tts_rate_slider = tk.Scale(tts_rate_frame, from_=50, to=150, orient="horizontal",
-                                   variable=self.tts_rate_var, resolution=1, font=self.dropdown_font)
+        tts_rate_slider = tk.Scale(tts_rate_frame, from_=50, to=150, orient="horizontal", variable=self.tts_rate_var,
+                                   resolution=1, font=self.dropdown_font)
         tts_rate_slider.set(100)
         tts_rate_slider.pack(side=tk.LEFT, padx=(10, 0), pady=5)
-        save_output_button = tk.Button(translation_window, text="Save Output",
-                                       command=self.save_translation_output,
-                                       bg="silver", fg="black", font=self.main_button_font,
-                                       relief="raised", bd=4)
+        save_output_button = tk.Button(translation_window, text="Save Output", command=self.save_translation_output,
+                                       bg="silver", fg="black", font=self.main_button_font, relief="raised", bd=4)
         save_output_button.place(relx=0.95, rely=0.95, anchor="se")
         clear_button = tk.Button(translation_window, text="Clear Screen", command=self.clear_translated_text,
                                  bg="silver", fg="black", font=self.main_button_font, relief="raised", bd=4)
@@ -936,11 +994,8 @@ class TranslatorApp:
         if not output_text:
             messagebox.showwarning("No Text", "There is no text output to save.")
             return
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Text files", "*.txt")],
-            title="Save Translation Output"
-        )
+        file_path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text files", "*.txt")],
+                                                 title="Save Translation Output")
         if file_path:
             try:
                 with open(file_path, "w", encoding="utf-8") as f:
@@ -1048,20 +1103,20 @@ class TranslatorApp:
             "Corsican": "co", "Croatian": "hr", "Czech": "cs", "Danish": "da", "Dutch": "nl", "English (US)": "en-US",
             "English (UK)": "en-GB", "Esperanto": "eo", "Estonian": "et", "Filipino": "tl", "Finnish": "fi",
             "French": "fr", "Frisian": "fy", "Galician": "gl", "Georgian": "ka", "German": "de", "Greek Modern": "el",
-            "Gujarati": "gu", "Haitian Creole": "ht", "Hausa": "ha", "Hebrew": "iw",  # Hebrew mapping updated
-            "Hindi": "hi", "Hmong": "hmn", "Hungarian": "hu", "Icelandic": "is", "Igbo": "ig", "Indonesian": "id",
-            "Irish": "ga", "Italian": "it", "Japanese": "ja", "Javanese": "jw", "Kannada": "kn", "Kazakh": "kk",
-            "Khmer": "km", "Kinyarwanda": "rw", "Korean": "ko", "Kurdish (Kurmanji)": "ku", "Kyrgyz": "ky",
-            "Lao": "lo", "Latin": "la", "Latvian": "lv", "Lithuanian": "lt", "Luxembourgish": "lb",
-            "Macedonian": "mk", "Malagasy": "mg", "Malay": "ms", "Malayalam": "ml", "Maltese": "mt", "Maori": "mi",
-            "Marathi": "mr", "Mongolian": "mn", "Myanmar": "my", "Nepali": "ne", "Norwegian": "no", "Odia": "or",
-            "Pashto": "ps", "Persian": "fa", "Polish": "pl", "Portuguese": "pt", "Punjabi": "pa", "Romanian": "ro",
-            "Russian": "ru", "Samoan": "sm", "Scots Gaelic": "gd", "Serbian": "sr", "Sesotho": "st", "Shona": "sn",
-            "Sindhi": "sd", "Sinhala": "si", "Slovak": "sk", "Slovenian": "sl", "Somali": "so", "Spanish": "es",
-            "Sundanese": "su", "Swahili": "sw", "Swedish": "sv", "Tajik": "tg", "Tamil": "ta", "Tatar": "tt",
-            "Telugu": "te", "Thai": "th", "Turkish": "tr", "Turkmen": "tk", "Ukrainian": "uk", "Urdu": "ur",
-            "Uyghur": "ug", "Uzbek": "uz", "Vietnamese": "vi", "Welsh": "cy", "Xhosa": "xh", "Yiddish": "yi",
-            "Yoruba": "yo", "Zulu": "zu"
+            "Gujarati": "gu", "Haitian Creole": "ht", "Hausa": "ha", "Hebrew": "iw", "Hindi": "hi", "Hmong": "hmn",
+            "Hungarian": "hu", "Icelandic": "is", "Igbo": "ig", "Indonesian": "id", "Irish": "ga", "Italian": "it",
+            "Japanese": "ja", "Javanese": "jw", "Kannada": "kn", "Kazakh": "kk", "Khmer": "km", "Kinyarwanda": "rw",
+            "Korean": "ko", "Kurdish (Kurmanji)": "ku", "Kyrgyz": "ky", "Lao": "lo", "Latin": "la", "Latvian": "lv",
+            "Lithuanian": "lt", "Luxembourgish": "lb", "Macedonian": "mk", "Malagasy": "mg", "Malay": "ms",
+            "Malayalam": "ml",
+            "Maltese": "mt", "Maori": "mi", "Marathi": "mr", "Mongolian": "mn", "Myanmar": "my", "Nepali": "ne",
+            "Norwegian": "no", "Odia": "or", "Pashto": "ps", "Persian": "fa", "Polish": "pl", "Portuguese": "pt",
+            "Punjabi": "pa", "Romanian": "ro", "Russian": "ru", "Samoan": "sm", "Scots Gaelic": "gd", "Serbian": "sr",
+            "Sesotho": "st", "Shona": "sn", "Sindhi": "sd", "Sinhala": "si", "Slovak": "sk", "Slovenian": "sl",
+            "Somali": "so", "Spanish": "es", "Sundanese": "su", "Swahili": "sw", "Swedish": "sv", "Tajik": "tg",
+            "Tamil": "ta", "Tatar": "tt", "Telugu": "te", "Thai": "th", "Turkish": "tr", "Turkmen": "tk",
+            "Ukrainian": "uk", "Urdu": "ur", "Uyghur": "ug", "Uzbek": "uz", "Vietnamese": "vi", "Welsh": "cy",
+            "Xhosa": "xh", "Yiddish": "yi", "Yoruba": "yo", "Zulu": "zu"
         }
 
     def add_message_to_queue(self, message):
@@ -1170,7 +1225,8 @@ class TranslatorApp:
                 logging.debug(f"Recognized Text: {cleaned_text}")
             else:
                 logging.debug("No meaningful text recognized.")
-            if self.map_language_for_translation(target_language_code) != self.map_language_for_translation(spoken_language_code):
+            if self.map_language_for_translation(target_language_code) != self.map_language_for_translation(
+                    spoken_language_code):
                 translated_text = self.translate_text(recognized_text, target_language_code)
                 if translated_text:
                     self.add_translation_to_queue(f"{translated_text} ")
@@ -1225,9 +1281,8 @@ class TranslatorApp:
             logging.info("Starting audio capture.")
             device_info = sd.query_devices(device_index, 'input')
             self.samplerate = int(device_info["default_samplerate"])
-            with sd.InputStream(callback=self.audio_callback, channels=1,
-                                samplerate=self.samplerate, device=device_index,
-                                blocksize=self.chunk_size):
+            with sd.InputStream(callback=self.audio_callback, channels=1, samplerate=self.samplerate,
+                                device=device_index, blocksize=self.chunk_size):
                 while self.is_listening and not self.audio_stop_event.is_set():
                     sd.sleep(50)
         except Exception as e:
@@ -1242,9 +1297,8 @@ class TranslatorApp:
                 device_index = self.get_selected_device_index()
                 if device_index is not None:
                     self.audio_stop_event.clear()
-                    self.audio_thread = threading.Thread(
-                        target=self.start_audio_capture,
-                        args=(device_index,), daemon=True)
+                    self.audio_thread = threading.Thread(target=self.start_audio_capture, args=(device_index,),
+                                                         daemon=True)
                     self.audio_thread.start()
                     logging.info("Audio capture started.")
                     self.disable_buffer_size_control()
@@ -1289,12 +1343,9 @@ class TranslatorApp:
             translated_text = self.translated_text_box.get("1.0", tk.END).strip()
             logging.debug(f"Translated Text: {translated_text}")
             if recognized_text or translated_text:
-                file_path = filedialog.asksaveasfilename(
-                    parent=self.root,
-                    defaultextension=".txt",
-                    filetypes=[("Text files", "*.txt")],
-                    title="Save Transcript As"
-                )
+                file_path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".txt",
+                                                         filetypes=[("Text files", "*.txt")],
+                                                         title="Save Transcript As")
                 logging.debug(f"Save dialog returned file path: {file_path}")
                 if file_path:
                     try:
@@ -1376,9 +1427,10 @@ class TranslatorApp:
                 selected_voice_entry = self.voice_var.get()
                 selected_voice_name = (selected_voice_entry.split(" - ")[1]
                                        if " - " in selected_voice_entry else selected_voice_entry)
-                logging.debug(f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
-                selected_voice = next((voice for voice in self.edge_tts_voices
-                                       if self.strip_voice_prefix(voice['Name']) == selected_voice_name), None)
+                logging.debug(
+                    f"Selected voice entry: '{selected_voice_entry}' parsed to voice name: '{selected_voice_name}'")
+                selected_voice = next((voice for voice in self.edge_tts_voices if
+                                       self.strip_voice_prefix(voice['Name']) == selected_voice_name), None)
                 if not selected_voice:
                     error_message = f"Selected voice '{selected_voice_name}' not found."
                     self.add_message_to_queue(error_message + "\n")
@@ -1465,14 +1517,24 @@ class TranslatorApp:
 
     def speak_text(self, text, origin="audio"):
         text = text.replace("\n", " ")
-        if origin == "audio":
-            self.audio_tts_queue.put(text)
-            if not self.audio_tts_processing:
-                self.process_audio_tts_queue()
+        # For TTS, if text is too long, split it into smaller chunks.
+        max_tts_length = 2000
+        if len(text) > max_tts_length:
+            chunks = split_text_for_tts(text, max_len=max_tts_length)
+            for chunk in chunks:
+                if origin == "audio":
+                    self.audio_tts_queue.put(chunk)
+                else:
+                    self.text_tts_queue.put(chunk)
         else:
-            self.text_tts_queue.put(text)
-            if not self.text_tts_processing:
-                self.process_text_tts_queue()
+            if origin == "audio":
+                self.audio_tts_queue.put(text)
+            else:
+                self.text_tts_queue.put(text)
+        if origin == "audio" and not self.audio_tts_processing:
+            self.process_audio_tts_queue()
+        elif origin != "audio" and not self.text_tts_processing:
+            self.process_text_tts_queue()
 
     def process_audio_tts_queue(self):
         self.audio_tts_processing = True
@@ -1592,8 +1654,8 @@ class TranslatorApp:
         target_code = self.current_target_language.split('-')[0].lower()
         if target_code == "iw":
             target_code = "he"
-        filtered = [voice for voice in self.edge_tts_voices
-                    if voice.get("Locale", "").split('-')[0].lower() == target_code]
+        filtered = [voice for voice in self.edge_tts_voices if
+                    voice.get("Locale", "").split('-')[0].lower() == target_code]
         if filtered:
             first_voice = filtered[0]
             stripped_name = self.strip_voice_prefix(first_voice['Name'])
