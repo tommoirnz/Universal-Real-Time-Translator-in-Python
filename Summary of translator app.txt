@@ -1,31 +1,115 @@
-This code sets up a real-time language translator GUI application, integrating speech recognition, text-to-speech, and translation. It employs several packages, including os, subprocess, tkinter, sounddevice, numpy, speech_recognition, deep_translator’s GoogleTranslator, threading, queue, scipy.io.wavfile, and pystray for system tray functions. Additionally, it uses PIL for image processing, asyncio for async operations with edge_tts, and ebooklib with BeautifulSoup for EPUB processing. Quite a detailed and comprehensive approach!
+Real-Time Language Translator – User Manual
+The Real-Time Language Translator is a powerful tool designed for seamless language translation. It processes live speech or text input, translates it between languages, and even vocalizes the translation using text-to-speech (TTS). This manual explains all the features so you can get the most out of the program.
 
-This Python script creates a real-time language translator app with a tkinter GUI. It includes audio processing for speech recognition, translation, and text-to-speech (TTS) using several libraries like ebooklib, BeautifulSoup, speech_recognition, and edge_tts. The app hides console windows, logs errors, and has language and microphone selection, text display, and dynamic font scaling. It processes audio in buffers, translates speech, plays TTS, handles text input, manages system tray controls, and caches translations. The main loop starts the app.
+1. Getting Started
+A. Installation and Launch
+Requirements:
+Ensure you have Python installed along with all necessary packages (e.g., tkinter, speech_recognition, deep_translator, edge_tts, pydub, etc.).
+Starting the Application:
+Run the main program file (commonly named main.py) using your preferred Python IDE or from the command line.
+2. Main Window Overview
+When you launch the program, the main window appears with several control panels:
 
-This code implements a full-featured, real‑time language translator application with a graphical user interface. Key aspects include:
+A. Language and Device Configuration
+Language Selection Dropdowns:
+Spoken Language: Select the language you will speak.
+Target Translation Language: Choose the language into which your speech or text will be translated.
+Swap Languages Button: Quickly swap the spoken and target languages if needed.
+Microphone Device Selection:
+A dropdown lists available audio input devices (e.g., built-in or external microphones). Choose the correct device for best results.
+B. Audio Capture Settings
+Mic Gain Slider:
+Adjust the sensitivity of your microphone. The slider is aligned with other audio settings for consistent placement.
+Buffer Size Slider:
+Controls how many audio chunks are accumulated before processing. Adjusting this can help optimize real-time recognition.
+Overlap Slider:
+Sets the percentage of overlap between successive audio buffers to reduce missed words.
+C. Control Buttons (Located in the Bottom Frame)
+Start/Stop Audio Capture:
+Toggles live audio capture. When started, the app listens for speech, converts it into text, translates it, and (if enabled) vocalizes the translation.
+Flush Buffers:
+Clears all internal buffers (audio and message queues) to reset the session.
+Read File:
+Opens a new window that allows you to load text files or EPUB eBooks for translation.
+Enter Text:
+Opens a manual text input window for typing or pasting text directly.
+D. Display Areas
+Recognized Text Display:
+A text box on the left side of the main window displays the live speech converted into text.
+Translation Window:
+A separate window shows the translated output and includes additional options for TTS and display customization.
+3. Translation Window and TTS Options
+The translation window not only displays the translated text but also provides controls to fine-tune the output:
 
-Library Imports & Setup:
-It imports many modules for GUI (tkinter), audio processing (sounddevice, numpy, scipy), speech recognition (speech_recognition), translation (deep_translator’s GoogleTranslator), and text‑to‑speech (edge‑tts). It also handles EPUB text extraction using EbookLib and BeautifulSoup and suppresses unnecessary warnings.
+A. Text-to-Speech (TTS) Controls
+Enable TTS Checkbox:
+Turn TTS on or off. When enabled, the application will speak the translated text.
+TTS Output Device Selection:
+Choose which audio output device should play the TTS audio. The default device is used unless changed.
+Voice Selection Dropdown:
+Pick from a list of available voices (which include country information) for the TTS service.
+TTS Speech Rate Slider:
+Adjust the speaking rate. Moving the slider above 100% speeds up the speech, while below 100% slows it down.
+B. Display and Batch Translation Options
+Translated Text Font Size Slider:
+Adjust the font size of the translated text for easier reading.
+Batch Translation Button:
+Initiates batch processing for long texts or documents. A progress window displays translation progress for the entire document.
+Save Output Button:
+Saves the translated text to a file.
+Clear Screen Button:
+Clears the translated text area.
+4. Text Input Features
+The application supports several methods to input text for translation:
 
-Platform-Specific Tweaks:
-On Windows, it monkey‑patches subprocess creation to hide the console window.
+A. Manual Text Entry
+Enter Text Window:
+Clicking the Enter Text button opens a window with a text box. You can type directly into the box or use the Paste button to insert text from your clipboard.
+Paste Functionality:
+The Paste button allows you to quickly paste any copied text into the text box for translation.
+Submit, Pause, and Resume:
+Once you’ve entered text, click Submit to begin translation. You can pause the reading/translation process if you need to review or edit the text, then resume when ready.
+B. File and eBook Input
+Read File Window (Listbox Mode):
+By clicking the Read File button, a new window opens where you can:
+Click Load File to select a text file (.txt) or an EPUB eBook.
+The file's contents are automatically split into segments. For EPUB files, the program extracts text from the ebook structure.
+The segmented text is displayed in a listbox.
+Navigating Segments:
+A slider is available to navigate through the different segments of the loaded document.
+Starting Translation from File:
+Click Begin to start processing and translating the loaded text.
+5. Live Speech Translation
+For real-time translation, follow these steps:
 
-Logging & Configuration:
-Debug and error messages are logged to a file in the user’s home directory. The code also configures ffmpeg (either bundled or system‑provided) for audio format conversion.
-
-TranslatorApp Class:
-The heart of the application, this class sets up:
-
-A dynamic, resizable GUI with controls for language selection, audio device selection, and text input.
-Audio capture from the microphone with adjustable gain and buffer size.
-Real‑time processing: it buffers audio, uses speech recognition to convert speech to text, and then translates the recognized text if the spoken and target languages differ.
-A translation caching mechanism (using an LRU‑style cache) to improve efficiency.
-Asynchronous text‑to‑speech functionality powered by an asyncio event loop and edge‑tts, with voice selection and device-specific output.
-Additional features such as saving transcripts, flushing buffers, swapping languages, and even minimizing the application to the system tray.
-Threading & Asynchronous Operations:
-The app leverages multiple threads (including a ThreadPoolExecutor) to handle audio processing and TTS concurrently, ensuring the GUI remains responsive.
-
-User Interaction & Text Input:
-Beyond live audio, users can also input text manually (or load it from files, including EPUBs) and control how the text is read, paused, or jumped through.
-
-Overall, the code brings together speech recognition, real‑time translation, and speech synthesis in a responsive GUI application designed for interactive language translation.
+Set Up Your Environment:
+Choose your spoken language and target translation language from the dropdown menus. Also, select the appropriate microphone device.
+Adjust Audio Settings:
+Use the Mic Gain, Buffer Size, and Overlap sliders to optimize audio capture based on your environment.
+Start Audio Capture:
+Click Start Audio Capture. The application will begin to listen, recognize your speech, translate it, and (if enabled) speak the translation.
+Live Feedback:
+The recognized text is shown in the main window, and the translation is displayed (and optionally vocalized) in the translation window.
+Stop Audio Capture:
+Click the same button (now labeled Stop Audio Capture) to end live processing.
+6. Additional Features
+A. Saving and Managing Transcripts
+Save Transcript:
+In the main window, use the Save Transcript button to store both the recognized speech and translated text into a file for later reference.
+B. Minimizing to the System Tray
+Minimize to Tray:
+Click the Minimize to Tray button to hide the main window while the program continues running in the background. You can restore the window later by interacting with the system tray icon.
+C. Robust Error Handling and Logging
+Network and DNS Issues:
+If the program is unable to resolve domains (e.g., "translate.google.com"), it logs the error and will retry. Make sure you have a stable internet connection.
+Internal Logging:
+Detailed logging is implemented to help diagnose errors such as speech recognition failures, TTS issues, or file loading errors. Check the log file (located in your home directory) for troubleshooting details.
+7. Tips for Optimal Use
+Internet Connection:
+A reliable internet connection is essential since the translation and speech recognition services rely on external APIs.
+Audio Settings:
+Experiment with the Buffer Size and Overlap sliders to best capture your speech, especially in noisy environments.
+Use Batch Translation for Documents:
+For long documents, use the batch translation feature to process and translate the entire text efficiently.
+Take Advantage of Multiple Input Methods:
+Whether you prefer speaking, typing, pasting text, or loading an ebook, the application supports all these input methods so you can choose the one that suits your needs best.
