@@ -2,14 +2,6 @@ import os
 import subprocess
 import re  # For sentence splitting
 import warnings
-
-# Stable version. Lots of additions. 24/02/2025
-# Tom Moir and ChatGPT 03Mini and High
-# Free to use. Just acknowledge the source please.
-# Optionally, filter out EbookLib warnings
-warnings.filterwarnings("ignore", category=UserWarning, module="ebooklib.epub")
-warnings.filterwarnings("ignore", category=FutureWarning, module="ebooklib.epub")
-
 import tkinter as tk  # Standard Python library for GUI applications
 from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont  # For dynamic font scaling
@@ -25,6 +17,17 @@ from PIL import Image, ImageDraw, ImageTk  # For image handling (including logo 
 import asyncio  # For asynchronous operations with edge_tts
 import string
 import difflib
+import io
+import logging
+from concurrent.futures import ThreadPoolExecutor
+import sys
+from collections import OrderedDict  # For implementing an LRU cache
+import pycountry
+import shutil
+
+# Optionally, filter out EbookLib warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="ebooklib.epub")
+warnings.filterwarnings("ignore", category=FutureWarning, module="ebooklib.epub")
 
 # For reading EPUB files:
 from ebooklib import epub
@@ -46,12 +49,6 @@ if os.name == "nt":
 
 import edge_tts  # Microsoft Edge TTS
 from pydub import AudioSegment  # For audio format conversion
-import sys
-from collections import OrderedDict  # For implementing an LRU cache
-import io
-import logging
-from concurrent.futures import ThreadPoolExecutor
-import pycountry
 
 # Configure logging to write debug and error messages to a file in the user's home directory.
 log_file = os.path.join(os.path.expanduser("~"), "translator_app_debug.log")
@@ -86,15 +83,6 @@ def epub_to_text(epub_path):
 def merge_short_segments(segments, min_word_count=3, min_char_threshold=4):
     """
     Merges segments that are too short.
-
-    A segment is considered too short if:
-      - It has fewer than min_word_count words, or
-      - It is a single token (contains no spaces) and its length (after removing periods)
-        is less than or equal to min_char_threshold.
-
-    The function performs two passes:
-      1. First, merge a short segment with the previous segment if available.
-      2. Then, for any remaining short segment (e.g. as the first segment), merge it with the following segment.
     """
     segments = [s.strip() for s in segments if s.strip()]
     if not segments:
@@ -135,15 +123,12 @@ def merge_short_segments(segments, min_word_count=3, min_char_threshold=4):
 def split_text_with_fallback(text, fallback_word_count=300):
     """
     Splits text using punctuation first.
-    Then, for each resulting segment, if it exceeds fallback_word_count words,
-    splits that segment into chunks of fallback_word_count words.
     """
     raw_segments = re.split(r'(?<=[.!?])\s+', text)
     new_segments = []
     for seg in raw_segments:
         words = seg.split()
         if len(words) > fallback_word_count:
-            # Split this segment into chunks of fallback_word_count words.
             for i in range(0, len(words), fallback_word_count):
                 new_segments.append(" ".join(words[i:i + fallback_word_count]))
         else:
@@ -154,7 +139,6 @@ def split_text_with_fallback(text, fallback_word_count=300):
 def split_text_for_tts(text, max_len=2000):
     """
     Splits a long text into chunks that are each at most max_len characters.
-    Splitting is done at word boundaries.
     """
     words = text.split()
     chunks = []
@@ -317,7 +301,6 @@ class TranslatorApp:
 
     def configure_ffmpeg(self):
         try:
-            import shutil
             if getattr(sys, 'frozen', False):
                 base_path = sys._MEIPASS
                 ffmpeg_executable = 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'
@@ -524,7 +507,6 @@ class TranslatorApp:
             else:
                 with open(file_path, "r", encoding="utf-8") as f:
                     full_text = f.read()
-            # Use fallback splitting for long unpunctuated text.
             raw_segments = split_text_with_fallback(full_text, fallback_word_count=300)
             self.text_segments = merge_short_segments(raw_segments, min_word_count=3, min_char_threshold=4)
             self.input_listbox.delete(0, tk.END)
@@ -705,7 +687,6 @@ class TranslatorApp:
             messagebox.showwarning("No Text", "Please enter some text before submitting.")
             return
         self.tts_input_source = "text"
-        # Use fallback splitting: first split using punctuation; then split any long segment (>300 words)
         raw_segments = split_text_with_fallback(text, fallback_word_count=300)
         self.text_segments = merge_short_segments(raw_segments, min_word_count=3, min_char_threshold=4)
         self.add_message_to_queue(f"Text Input ({self.spoken_language_var.get()}): {text}\n")
@@ -846,29 +827,35 @@ class TranslatorApp:
 
     def translate_text(self, text, target_language):
         max_length = 5000
-        if len(text) > max_length:
-            chunks = text.split()  # split into words
-            current_chunk = ""
-            chunk_list = []
-            for word in chunks:
-                if current_chunk:
-                    if len(current_chunk) + len(word) + 1 > max_length:
-                        chunk_list.append(current_chunk)
-                        current_chunk = word
-                    else:
-                        current_chunk += " " + word
-                else:
-                    current_chunk = word
-            if current_chunk:
-                chunk_list.append(current_chunk)
-            translated_chunks = []
-            for chunk in chunk_list:
-                translated_chunk = self._translate_single(chunk, target_language)
-                if translated_chunk is not None:
-                    translated_chunks.append(translated_chunk)
-            return " ".join(translated_chunks)
-        else:
+        if not text.strip():
+            return text
+        if len(text) <= max_length:
             return self._translate_single(text, target_language)
+        segments = split_text_with_fallback(text, fallback_word_count=300)
+        final_segments = []
+        for seg in segments:
+            if len(seg) <= max_length:
+                final_segments.append(seg)
+            else:
+                words = seg.split()
+                current_chunk = ""
+                for word in words:
+                    if current_chunk:
+                        if len(current_chunk) + len(word) + 1 > max_length:
+                            final_segments.append(current_chunk)
+                            current_chunk = word
+                        else:
+                            current_chunk += " " + word
+                    else:
+                        current_chunk = word
+                if current_chunk:
+                    final_segments.append(current_chunk)
+        translated_segments = []
+        for chunk in final_segments:
+            translated_chunk = self._translate_single(chunk, target_language)
+            if translated_chunk is not None:
+                translated_segments.append(translated_chunk)
+        return " ".join(translated_segments)
 
     def get_country_name_from_locale(self, locale_code):
         if locale_code.lower() == "cy-gb":
@@ -978,6 +965,12 @@ class TranslatorApp:
                                    resolution=1, font=self.dropdown_font)
         tts_rate_slider.set(100)
         tts_rate_slider.pack(side=tk.LEFT, padx=(10, 0), pady=5)
+        # Batch translation button with background thread and progress indicator.
+        batch_translate_button = tk.Button(translation_window, text="Batch Tran",
+                                           command=self.batch_translate_document,
+                                           bg="silver", fg="black", font=self.main_button_font,
+                                           relief="raised", bd=4)
+        batch_translate_button.place(relx=0.95, rely=0.85, anchor="se")
         save_output_button = tk.Button(translation_window, text="Save Output", command=self.save_translation_output,
                                        bg="silver", fg="black", font=self.main_button_font, relief="raised", bd=4)
         save_output_button.place(relx=0.95, rely=0.95, anchor="se")
@@ -1517,7 +1510,6 @@ class TranslatorApp:
 
     def speak_text(self, text, origin="audio"):
         text = text.replace("\n", " ")
-        # For TTS, if text is too long, split it into smaller chunks.
         max_tts_length = 2000
         if len(text) > max_tts_length:
             chunks = split_text_for_tts(text, max_len=max_tts_length)
@@ -1709,34 +1701,71 @@ class TranslatorApp:
         logging.debug(f"No prefix found to strip for voice name: '{voice_name}'")
         return voice_name
 
-    def get_country_name_from_locale(self, locale_code):
-        if locale_code.lower() == "cy-gb":
-            return "Wales"
-        if '-' in locale_code:
-            parts = locale_code.split('-')
-            if len(parts) >= 2:
-                country_code = parts[1].upper()
-                country = pycountry.countries.get(alpha_2=country_code)
-                if country:
-                    return country.name
-        return ""
+    # New method for batch translation running in a background thread with a progress indicator.
+    def batch_translate_in_background(self):
+        # Turn off TTS.
+        self.tts_enabled.set(False)
+        self.add_message_to_queue("TTS turned off for batch translation.\n")
 
-    def get_full_language_name(self, locale_code):
-        try:
-            if '-' in locale_code:
-                language_part, _ = locale_code.split('-')
-            else:
-                language_part = locale_code
-            language = pycountry.languages.get(alpha_2=language_part)
-            if language and hasattr(language, 'name'):
-                language_name = language.name
-            else:
-                language_name = locale_code
-            if language_name.lower() == "modern greek":
-                language_name = "Greek Modern"
-            return language_name
-        except Exception:
-            return locale_code
+        # Gather text from input sources.
+        text = ""
+        if self.input_listbox is not None and self.input_listbox.size() > 0:
+            items = self.input_listbox.get(0, tk.END)
+            text = "\n".join(items)
+        elif self.input_text_box is not None:
+            text = self.input_text_box.get("1.0", tk.END).strip()
+        else:
+            self.root.after(0,
+                            lambda: messagebox.showinfo("No Document", "No text document is loaded for translation."))
+            return
+        if not text.strip():
+            self.root.after(0, lambda: messagebox.showinfo("Empty Document", "The loaded document is empty."))
+            return
+
+        # Create a progress window.
+        def create_progress_window():
+            progress_win = tk.Toplevel(self.root)
+            progress_win.title("Translating Document")
+            progress_win.geometry("350x100")
+            progress_label = tk.Label(progress_win, text="Translating...")
+            progress_label.pack(padx=10, pady=10)
+            progress_bar = ttk.Progressbar(progress_win, orient="horizontal", mode="determinate", length=300)
+            progress_bar.pack(padx=10, pady=10)
+            return progress_win, progress_bar
+
+        progress_win, progress_bar = create_progress_window()
+
+        # Clear previous translation output and translation cache.
+        self.root.after(0, lambda: self.translated_text_box.delete("1.0", tk.END))
+        with self.cache_lock:
+            self.translation_cache.clear()
+
+        # Split text into segments.
+        segments = split_text_with_fallback(text, fallback_word_count=300)
+        merged_segments = merge_short_segments(segments, min_word_count=3, min_char_threshold=4)
+        total_segments = len(merged_segments)
+
+        # Configure the progress bar maximum.
+        self.root.after(0, lambda: progress_bar.config(maximum=total_segments))
+
+        translated_segments = []
+        for idx, seg in enumerate(merged_segments):
+            translated_seg = self._translate_single(seg, self.current_target_language)
+            if translated_seg is None:
+                translated_seg = ""
+            translated_segments.append(translated_seg)
+            self.root.after(0, lambda v=idx + 1: progress_bar.config(value=v))
+            self.add_message_to_queue(f"Translated segment {idx + 1}/{total_segments}.\n")
+
+        translated_text = " ".join(translated_segments)
+        self.root.after(0, lambda: self.translated_text_box.insert(tk.END, translated_text))
+        self.add_message_to_queue("Batch translation completed.\n")
+
+        self.root.after(0, progress_win.destroy)
+
+    def batch_translate_document(self):
+        # Run the batch translation in a background thread.
+        threading.Thread(target=self.batch_translate_in_background, daemon=True).start()
 
 
 if __name__ == "__main__":
